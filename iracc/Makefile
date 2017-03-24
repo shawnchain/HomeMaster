@@ -25,5 +25,5 @@ install: iracc-gate
 	cp -f iracc-gate $(PREFIX)/sbin/
 
 clean:
-	rm -f iracc-gate *.o
+	@rm -f iracc-gate *.o
 
