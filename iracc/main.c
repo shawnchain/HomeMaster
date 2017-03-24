@@ -18,7 +18,6 @@
 #include "utils.h"
 #include "iokit.h"
 #include "iracc.h"
-#include "crc16.h"
 
 static void print_help(int argc, char *argv[]);
 
@@ -41,14 +40,13 @@ AppConfig appConfig = {
 		.device="/dev/tty.SLAB_USBtoUART",
 #endif
 		.baudrate = 9600,
-		.pid_file = "/tmp/sms-daemon.pid",
-		.log_file = "/tmp/sms-daemon.log"
+		.pid_file = "/tmp/iracc-gate.pid",
+		.log_file = "/tmp/iracc-gate.log"
 };
 
 int main(int argc, char* argv[]){
 	int opt;
 
-	crc16_test();
 	while ((opt = getopt_long(argc, argv, "S:D:B:l:dh",
 				long_opts, NULL)) != -1) {
 		switch (opt){
@@ -116,13 +114,13 @@ int main(int argc, char* argv[]){
 #endif
 
 static void print_help(int argc, char *argv[]){
-	printf("SMS Forward Daemon , ver 0.1(%s)\n",VERSION);
+	printf("IRACC Gate Daemon , ver 0.1(%s)\n",VERSION);
 	printf("Usage:\n");
 	printf("  %s [options]\n", argv[0]);
 	printf("Options:\n");
 	printf("  -S, --service                       service API URL\n");
-	printf("  -D, --device                        specify path for GSM device\n"); /*-D /dev/ttyUSB0?AT+KISS=1;*/
-	printf("  -B, --baudrate                      specify baudrate for GSM device \n"); /*-B 115200*/
+	printf("  -D, --device                        specify path for IRACC device\n"); /*-D /dev/ttyUSB0?AT+KISS=1;*/
+	printf("  -B, --baudrate                      specify baudrate for IRACC device \n"); /*-B 115200*/
 	printf("  -l, --log                           log file name\n");
 	printf("  -d, --daemon                        run as daemon process\n");
 	printf("  -h, --help                          print this help\n");
