@@ -16,6 +16,7 @@ typedef struct {
 
 	char pid_file[64];
 	char log_file[64];
+	char shm_file[64];
 }AppConfig;
 
 extern AppConfig appConfig;

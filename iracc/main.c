@@ -12,14 +12,17 @@
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <signal.h>
 
 #include "config.h"
 #include "log.h"
 #include "utils.h"
 #include "iokit.h"
 #include "iracc.h"
+#include "databus.h"
 
 static void print_help(int argc, char *argv[]);
+static void handle_signals();
 
 static struct option long_opts[] = {
 	{ "service", required_argument, 0, 'S', },
@@ -41,7 +44,8 @@ AppConfig appConfig = {
 #endif
 		.baudrate = 9600,
 		.pid_file = "/tmp/iracc-gate.pid",
-		.log_file = "/tmp/iracc-gate.log"
+		.log_file = "/tmp/iracc-gate.log",
+		.shm_file = "/tmp/iracc-gate.shm",
 };
 
 int main(int argc, char* argv[]){
@@ -53,7 +57,7 @@ int main(int argc, char* argv[]){
 		case 'S': // service
 			strncpy(appConfig.service,optarg,sizeof(appConfig.service) -1);
 			break;
-		case 'D': // gsm serial device path
+		case 'D': // iracc/485 serial device path
 			strncpy(appConfig.device,optarg,sizeof(appConfig.device) -1);
 			break;
 		case 'B':{
@@ -84,27 +88,37 @@ int main(int argc, char* argv[]){
 	if ((fp = fopen(appConfig.pid_file, "w"))) {
 		fprintf(fp, "%d\n", (int)getpid());
 		fclose(fp);
+	}else{
+		ERROR("*** error creating pid file(%s), %s. Startup Aborted.",appConfig.pid_file,strerror(errno));
+		exit(1);
 	}
+
 
 	int rc;
 
 	if((rc = log_init(appConfig.log_file)) < 0){
 		printf("*** warning: log system initialize failed");
 	}
-
 	if((rc = io_init()) < 0){
-		ERROR("*** error: initialize the poll module, aborted.");
+		ERROR("*** error initializing iokit module, Startup Aborted.");
+		exit(1);
+	}
+	if((rc = databus_init(appConfig.shm_file,1/*master*/)) < 0){
+		ERROR("*** error initializing databus module, Startup Aborted.");
+		exit(1);
+	}
+	if((rc = iracc_init(appConfig.device,appConfig.baudrate,NULL)) < 0){
+		ERROR("*** error initializing IRACC module, Startup Aborted.");
 		exit(1);
 	}
 
-	if((rc = iracc_init(appConfig.device,appConfig.baudrate,NULL)) < 0){
-		ERROR("*** error: initialize the GSM module, aborted.");
-		exit(1);
-	}
+	//iracc_test();
+	handle_signals();
 
 	while(true){
 		iracc_run();
 		io_run();
+		databus_test();
 	}
 	return 0;
 }
@@ -124,4 +138,19 @@ static void print_help(int argc, char *argv[]){
 	printf("  -l, --log                           log file name\n");
 	printf("  -d, --daemon                        run as daemon process\n");
 	printf("  -h, --help                          print this help\n");
+}
+
+static void signal_handler(int sig){
+	//TODO release resources
+	DBG("signal caught: %d",sig);
+	iracc_shutdown();
+	io_shutdown();
+	databus_shutdown();
+	INFO("Gateway Shutdown OK");
+	log_shutdown();
+	exit(0);
+}
+static void handle_signals(){
+	signal(SIGINT, signal_handler);
+	signal(SIGQUIT, signal_handler);
 }

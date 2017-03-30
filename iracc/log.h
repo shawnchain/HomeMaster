@@ -23,6 +23,7 @@
 
 int log_fd();
 int log_init(const char* logfile);
+int log_shutdown();
 void log_log(const char* tag, const char* module, const char* message, ...);
 void log_hexdump(void *d, size_t len);
 #endif /* SRC_LOG_H_ */

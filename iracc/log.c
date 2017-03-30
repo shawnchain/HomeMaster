@@ -88,6 +88,15 @@ int log_init(const char* logfile){
 	return 0;
 }
 
+int log_shutdown(){
+	//DBG("Logger shutdown");
+	if(logfile){
+		fclose(logfile);
+		logfile = NULL;
+	}
+	return 0;
+}
+
 void log_log(const char* tag, const char* module, const char* msg, ...) {
 	char string[1024];
 	va_list args;

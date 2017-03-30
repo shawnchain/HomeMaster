@@ -104,21 +104,32 @@ time_t get_time_milli_seconds() {
 	return time_in_mill;
 }
 
-void hexdump(void *d, size_t len) {
+//void hexdump(void *d, size_t len) {
+//	hexdump(d,len,-1);
+//}
+
+void hexdump(void *d, size_t len, int direction){
+	if(len == 0) return;
 	unsigned char *s;
 	uint16_t i = 0;
-	printf("=======================================================================\n");
+	if(direction == 0){
+		printf(">>  ");
+	}else if(direction == 1){
+		printf("<<  ");
+	}else{
+		printf("--  ");
+	}
 	for (s = d; len; len--, s++){
 		printf("%02x ", *s);
 		i++;
 		if(i > 0){
-			if(i % 16 == 0)
+			if(i % 24 == 0)
 				printf("\n");
-			else if(i % 8 == 0)
-				printf("\t");
+			else if(i % 4 == 0)
+				printf("  ");
 		}
 	}
-	printf("\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n");
+	printf("\n");
 }
 
 void stringdump(void *d, size_t len) {

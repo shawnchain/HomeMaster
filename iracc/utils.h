@@ -22,6 +22,8 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+#include <arpa/inet.h>
+
 #define countof(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 /* Misc definitions */
@@ -32,6 +34,14 @@
 #define	EOF   (-1)
 #endif
 
+#define SWAP16(s) ((s<<8) | (s>>8))
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define TO_BIG_ENDIAN_U16(s) SWAP16(s)
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define TO_BIG_ENDIAN_U16(s) s
+#else
+#error Unsupported byte order
+#endif
 
 struct sockaddr_inx {
 	union {
@@ -53,7 +63,8 @@ static inline int set_nonblock(int sockfd) {
 	return 0;
 }
 
-void hexdump(void *d, size_t len);
+//void hexdump(void *d, size_t len);
+void hexdump(void *d, size_t len, int direction);
 void stringdump(void *d, size_t len);
 
 

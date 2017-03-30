@@ -35,6 +35,25 @@ int io_init() {
 	return 0;
 }
 
+int io_shutdown(){
+#if 1
+	//just remove all fds from reactor
+	int i = 0;
+	for (i = 0; i < io_fds_len; i++) {
+		int fd = io_fds[i];
+		if(fd >0){
+			DBG("clean leaked fd %d",fd);
+			close(fd);
+			io_fds[i] = -1;
+			io_cbs[i] = 0;
+		}
+	}
+	maxfd = -1;
+#endif
+	DBG("IOKit shutdown");
+	return 0;
+}
+
 int io_add(int fd, io_callback callback) {
 	int i = 0;
 	for (i = 0; i < io_fds_len; i++) {
@@ -140,6 +159,16 @@ static int _io_fn_read_line(struct IOReader *reader);
 static int _io_fn_read_stream_timeout(struct IOReader *reader);
 
 #define DEFAULT_READ_BUFFER_SIZE 8192
+
+#if 0 - TODO
+static int _io_default_runloop(int fd ,io_state state){
+	return -1;
+}
+void io_open(struct IOReader *reader, int fd, io_callback cb){
+	io_add(fd,cb?cb:_io_default_runloop);
+}
+#endif
+
 void io_make_line_reader(struct IOReader *reader, int fd,  void* readercb){
 	bzero(reader, sizeof(struct IOReader));
 	reader->fd = fd;
@@ -245,6 +274,8 @@ static int _io_fn_read_stream_timeout(struct IOReader *reader) {
 }
 
 static int _io_fn_run(struct IOReader *reader) {
+	if (reader->fd < 0)
+		return -1;
 	if (reader->timeout > 0) {
 		size_t t = get_time_milli_seconds();
 		if (t - reader->lastRead > reader->timeout) {
@@ -255,11 +286,13 @@ static int _io_fn_run(struct IOReader *reader) {
 }
 
 static int _io_fn_close(struct IOReader *reader) {
-	if(reader->fd >0){
+	if(reader->fd < 0){
+		return -1;
+	}
+
+	if(reader->fd >0){ // what if fd == 0 ?
 		close(reader->fd);
 	}
-	reader->fd = -1;
-
 	// free internal buffer
 	if(reader->buffer && reader->bufferRetained){
 		free(reader->buffer);
@@ -267,5 +300,7 @@ static int _io_fn_close(struct IOReader *reader) {
 		reader->bufferRetained = false;
 	}
 	bzero(reader, sizeof(struct IOReader));
+	reader->fd = -1;
+	//DBG("IOFile closed");
 	return 0;
 }

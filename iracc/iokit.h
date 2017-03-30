@@ -26,6 +26,7 @@ int io_init();
 int io_add(int fd, io_callback callback);
 int io_remove(int fd);
 int io_run();
+int io_shutdown();
 
 //////////////////////////////////////////////////////////////////
 // The Buffered IOReader Class
@@ -65,18 +66,20 @@ struct IOWriter{
 	size_t maxBufferLen;
 }Writer;
 
+#if 0 // - TODO - encapsulate the OPEN logic
+#define IO_OPEN(x,fd,cb)  //io_open((struct IOReader*)x,fd,cb)
+void io_open(struct IOReader *reader, int fd, void callback);
+#endif
 
-#define IO_READ(x) ((struct IOReader *)x)->fnRead((struct IOReader *)x)
-#define IO_CLOSE(x) ((struct IOReader *)x)->fnClose((struct IOReader *)x)
-#define IO_FLUSH(x) ((struct IOReader *)x)->fnFlush((struct IOReader *)x)
-#define IO_RUN(x) ((struct IOReader *)x)->fnRun((struct IOReader *)x)
+#define IO_READ(x) (((struct IOReader *)(x))->fnRead)?((struct IOReader *)(x))->fnRead((struct IOReader *)(x)):-1
+#define IO_CLOSE(x) (((struct IOReader *)(x))->fnClose)? ((struct IOReader *)x)->fnClose((struct IOReader *)x):-1
+#define IO_FLUSH(x) (((struct IOReader *)(x))->fnFlush)? ((struct IOReader *)x)->fnFlush((struct IOReader *)x):-1
+#define IO_RUN(x) (((struct IOReader *)(x))->fnRun)?((struct IOReader *)x)->fnRun((struct IOReader *)x):-1
 
 #define IO_MAKE_LINE_READER(x,fd,cb) io_make_line_reader((struct IOReader *)x,fd,cb)
-
 void io_make_line_reader(struct IOReader *reader, int fd,  void* readercb);
 
 #define IO_MAKE_STREAM_READER(x,fd,cb,to) io_make_stream_reader((struct IOReader *)x,fd,cb,to)
-
 void io_make_stream_reader(struct IOReader *reader, int fd, void* readercb, time_t readtimeout);
 
 #endif /* IOKIT_H_ */
