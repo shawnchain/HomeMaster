@@ -13,18 +13,30 @@
 #include <stdbool.h>
 #include <sys/stat.h>
 
-static size_t logSizeThreshold = 128 * 1024;
-static size_t logSize = 0;
-//static unsigned char logLevelThreshold = 0;
-static char logfileName[128];
-static FILE *logfile = NULL;
+
+typedef struct{
+	int logLevel;
+	size_t logSizeThreshold;
+	size_t logSize;
+	char logfileName[128];
+	FILE *logfile;
+}LogCtx;
+
+static LogCtx log = {
+		.logLevel = DEFAULT_LOG_LEVEL,
+		.logSizeThreshold = (128 * 1024),
+		.logSize = 0,
+		.logfileName = "",
+		.logfile = NULL,
+};
+
 
 #define to_append false
 #define to_overwrite true
 
 int log_fd(){
-	if(logfile){
-		return fileno(logfile);
+	if(log.logfile){
+		return fileno(log.logfile);
 	}else{
 		return -1;
 	}
@@ -32,27 +44,26 @@ int log_fd(){
 
 static int log_open(bool overwrite){
 	if(overwrite)
-		logfile = fopen(logfileName,"w");
+		log.logfile = fopen(log.logfileName,"w");
 	else
-		logfile = fopen(logfileName,"a");
-	if(!logfile){
-		//log_log("ERROR",__FILE__,"open log file failed, %s",logfileName);
-		printf("open log file failed, %s\n",logfileName);
+		log.logfile = fopen(log.logfileName,"a");
+	if(!log.logfile){
+		printf("open log file failed, %s\n",log.logfileName);
 		return -1;
 	}
 
 	// get log file size if appending
 	if(overwrite){
-		logSize = 0;
-		printf("open log file [%s] success\n",logfileName);
+		log.logSize = 0;
+		//printf("open log file [%s] success\n",log.logfileName);
 	}else{
 		// appending mode, get existing file size
 		struct stat st;
 		memset(&st,0,sizeof(struct stat));
-		stat(logfileName,&st);
-		logSize = st.st_size;
+		stat(log.logfileName,&st);
+		log.logSize = st.st_size;
 		//log_log("INFO ",__FILE__,"log file size, %d",logSize);
-		printf("open log file %s success, file size: %d\n",logfileName,(int)logSize);
+		//printf("open log file %s success, file size: %d\n",log.logfileName,(int)log.logSize);
 	}
 	return 0;
 }
@@ -60,18 +71,18 @@ static int log_open(bool overwrite){
 static int log_rotate(){
 	int rc = 0;
 	// close the log file
-	if(!logfile) return -1;
-	fclose(logfile);
-	logfile = NULL;
+	if(!log.logfile) return -1;
+	fclose(log.logfile);
+	log.logfile = NULL;
 
 	// TODO -
 	// remove the $logfileName.1
 	// rename to $logfileName.1
 	char logfileName2[150];
-	snprintf(logfileName2, sizeof(logfileName2) - 1, "%s.1",logfileName);
+	snprintf(logfileName2, sizeof(logfileName2) - 1, "%s.1",log.logfileName);
 	// remove the existing old file
 	remove(logfileName2);
-	rename(logfileName,logfileName2);
+	rename(log.logfileName,logfileName2);
 	// reopen with overwrite
 	//log_log("INFO ",__FILE__,"log file rotated");
 	printf("log file rotated\n");
@@ -79,25 +90,26 @@ static int log_rotate(){
 	return rc;
 }
 
-int log_init(const char* logfile){
+int log_init(const char* logfile,int loglevel){
 	int rc;
-	strncpy(logfileName,logfile,sizeof(logfileName) - 1);
+	strncpy(log.logfileName,logfile,sizeof(log.logfileName) - 1);
 	if((rc = log_open(to_append)) < 0){
 		return rc;
 	}
+	log.logLevel = loglevel;
 	return 0;
 }
 
 int log_shutdown(){
 	//DBG("Logger shutdown");
-	if(logfile){
-		fclose(logfile);
-		logfile = NULL;
+	if(log.logfile){
+		fclose(log.logfile);
+		log.logfile = NULL;
 	}
 	return 0;
 }
 
-void log_log(const char* tag, const char* module, const char* msg, ...) {
+void log_log(const char* tag, int level, const char* module, const char* msg, ...) {
 	char string[1024];
 	va_list args;
 	va_start(args,msg);
@@ -107,6 +119,11 @@ void log_log(const char* tag, const char* module, const char* msg, ...) {
 	char stime[32];
 	time_t current_time;
 	struct tm * time_info;
+
+	if(level > log.logLevel){
+		return;
+	}
+
 	time(&current_time);
 	time_info = localtime(&current_time);
 	strftime(stime, sizeof(stime) -1, "%Y-%m-%d %H:%M:%S", time_info);
@@ -116,9 +133,9 @@ void log_log(const char* tag, const char* module, const char* msg, ...) {
 	// body
 	bytesPrinted += vsnprintf((string + bytesPrinted),sizeof(string) - bytesPrinted - 1,msg,args);
 
-	if(logfile){
-		fprintf(logfile,"%s\n", string);
-		fflush(logfile);
+	if(log.logfile){
+		fprintf(log.logfile,"%s\n", string);
+		fflush(log.logfile);
 	}
 	// if debug level is on, pring to console as well
 	if(strncmp("ERROR",tag,5) == 0){
@@ -129,9 +146,9 @@ void log_log(const char* tag, const char* module, const char* msg, ...) {
 	bytesPrinted++; // including the leading '\n'
 
 	if(bytesPrinted > 0){
-		logSize += bytesPrinted;
+		log.logSize += bytesPrinted;
 		//printf("logsize: %d\n",(int)logSize);
-		if(logSize >= logSizeThreshold){
+		if(log.logSize >= log.logSizeThreshold){
 			// we should rotate the log right now!
 			log_rotate();
 		}
@@ -141,12 +158,12 @@ void log_log(const char* tag, const char* module, const char* msg, ...) {
 void log_hexdump(void *d, size_t len) {
 	unsigned char *s;
 	size_t bytesPrinted = 0;
-	if(logfile){
+	if(log.logfile){
 		for (s = d; len; len--, s++){
-			bytesPrinted += fprintf(logfile,"%02x ", (unsigned int) *s);
+			bytesPrinted += fprintf(log.logfile,"%02x ", (unsigned int) *s);
 		}
-		bytesPrinted += fprintf(logfile,"\n");
-		fflush(logfile);
+		bytesPrinted += fprintf(log.logfile,"\n");
+		fflush(log.logfile);
 	}
 	for (s = d; len; len--, s++){
 		printf("%02x ", (unsigned int) *s);

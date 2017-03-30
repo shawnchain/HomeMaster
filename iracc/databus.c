@@ -21,15 +21,17 @@ typedef struct{
 	int shmId;
 	void * shmAddr;
 	size_t shmSize;
-	bool master;
 
 	int semId;
+
+	bool master;
 }DatabusCtx;
 
 #define SHARED_MEM_SIZE 8 * 1024
 
 static DatabusCtx databus;
 
+static bool _databus_shm_isowner();
 static void _databus_lock();
 static void _databus_unlock();
 
@@ -41,13 +43,13 @@ int databus_init(const char* sharedFilePath,bool masterFlag){
 		fprintf(fp, "%d\n", (int)getpid());
 		fclose(fp);
 	}else{
-		ERROR("*** error creating shm file(%s), %s.",sharedFilePath,strerror(errno));
+		WARN("*** error creating shm file(%s), %s.",sharedFilePath,strerror(errno));
 		return -1;
 	}
 	key_t shmkey = ftok(sharedFilePath,1);
 	if(shmkey < 0){
 		// something wrong
-		ERROR("error: ftok() %s",strerror(errno));
+		WARN("error: ftok() %s",strerror(errno));
 		return -1;
 	}
 
@@ -59,12 +61,12 @@ int databus_init(const char* sharedFilePath,bool masterFlag){
 	}
 	int shmid = shmget(shmkey,shmsize,shmflag);
 	if(shmid < 0){
-		ERROR("error: shmget() %s",strerror(errno));
+		WARN("error: shmget() %s",strerror(errno));
 		return -1;
 	}
 	void* shmaddr = shmat(shmid,0,0);
 	if(shmaddr == 0){
-		ERROR("error: shmat() %s",strerror(errno));
+		WARN("error: shmat() %s",strerror(errno));
 		return -1;
 	}
 	databus.shmId = shmid;
@@ -79,7 +81,7 @@ int databus_init(const char* sharedFilePath,bool masterFlag){
 	}
 	int semid = semget(shmkey,1,semflag);
 	if(semid < 0){
-		ERROR("error: semget() %s",strerror(errno));
+		WARN("error: semget() %s",strerror(errno));
 		return -1;
 	}
 	// only master set the semaphore initial value
@@ -103,7 +105,8 @@ int databus_shutdown(){
 		shmdt(databus.shmAddr);
 		databus.shmAddr = 0;
 	}
-	if(databus.master && databus.shmId){
+	if(_databus_shm_isowner()/*databus.master && databus.shmId*/){
+		DBG("release shared memory %d",databus.shmId);
 		shmctl(databus.shmId,IPC_RMID,0);
 		databus.shmId = 0;
 	}
@@ -119,7 +122,7 @@ int databus_shutdown(){
 #endif
 int databus_put(uint8_t* data, size_t len){
 	if(!databus.shmAddr){
-		return -1;
+		return 0;
 	}
 	_databus_lock();
 	size_t size = MIN(len,databus.shmSize);
@@ -131,7 +134,7 @@ int databus_put(uint8_t* data, size_t len){
 int databus_get(uint8_t* data, size_t *len){
 	if(!databus.shmAddr){
 		*len = 0;
-		return -1;
+		return 0;
 	}
 	_databus_lock();
 	size_t size = MIN((*len),databus.shmSize);
@@ -139,6 +142,17 @@ int databus_get(uint8_t* data, size_t *len){
 	*len = size;
 	_databus_unlock();
 	return size;
+}
+
+static bool _databus_shm_isowner(){
+	if(!databus.shmId) return false;
+
+	struct shmid_ds buf;
+	memset(&buf,0,sizeof(struct shmid_ds));
+	if(0 == shmctl(databus.shmId,IPC_STAT,&buf)){
+		return buf.shm_cpid == getpid();
+	}
+	return false;
 }
 
 static inline void _databus_sem_op(int val){
@@ -155,11 +169,9 @@ static inline void _databus_sem_op(int val){
 	}
 }
 static void _databus_lock(){
-	//DBG("_databus_lock()");
 	_databus_sem_op(-1); // decrease to 0 to lock
 }
 static void _databus_unlock(){
-	//DBG("_databus_unlock()");
 	_databus_sem_op(1);  // increase to 1 to unlock
 }
 

@@ -96,7 +96,7 @@ int main(int argc, char* argv[]){
 
 	int rc;
 
-	if((rc = log_init(appConfig.log_file)) < 0){
+	if((rc = log_init(appConfig.log_file,DEFAULT_LOG_LEVEL)) < 0){
 		printf("*** warning: log system initialize failed");
 	}
 	if((rc = io_init()) < 0){
