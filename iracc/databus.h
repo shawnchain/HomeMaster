@@ -19,4 +19,5 @@ int databus_put(uint8_t* data, size_t len);
 
 int databus_get(uint8_t* data, size_t *len);
 
+void databus_test();
 #endif /* IRACC_DATABUS_H_ */
