@@ -13,10 +13,13 @@ CC ?= gcc
 CFLAGS += -Wall -ggdb -DDEBUG -DVERSION=\"$(GIT_VERSION)\"
 HEADERS = gsm.h utils.h serial_port.h log.h iokit.h
 
-all: iracc-gate 
+all: iracc-gate iracc-ctrl
 
 iracc-gate: main.o serial_port.o utils.o log.o iracc.o iokit.o crc16.o modbus.o databus.o
 	$(CC) $(LDFLAGS) -o $@ $^ 
+
+iracc-ctrl: iracc_control.o utils.o log.o databus.o
+	$(CC) $(LDFLAGS) -o $@ $^
 
 %.o: %.c $(HEADERS)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -25,5 +28,5 @@ install: iracc-gate
 	cp -f iracc-gate $(PREFIX)/sbin/
 
 clean:
-	@rm -f iracc-gate *.o
+	@rm -f iracc-gate iracc-ctrl *.o
 
