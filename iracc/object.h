@@ -9,6 +9,7 @@
 #define IRACC_OBJECT_H_
 
 #include <stdlib.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C"

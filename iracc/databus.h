@@ -10,6 +10,7 @@
 
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 int databus_init(const char* sharedFilePath,bool createFlag);
 

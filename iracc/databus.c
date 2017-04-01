@@ -7,12 +7,23 @@
 
 #include "databus.h"
 #include "lib.h"
+#include <sys/types.h>
 #include <sys/shm.h>
 #include <sys/ipc.h>
 #include <sys/sem.h>
 #include <errno.h>
 #include <time.h>
 #include <stdio.h>
+
+
+#ifdef _SEM_SEMUN_UNDEFINED
+union semun { 
+	int val; 
+	struct semid_ds *buf; 
+	unsigned short *array; 
+	struct seminfo *__buf; 
+};
+#endif 
 
 typedef struct{
 	int shmId;
