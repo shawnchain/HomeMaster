@@ -6,16 +6,13 @@
  */
 
 #include "databus.h"
-#include "log.h"
-#include <string.h>
+#include "lib.h"
 #include <sys/shm.h>
 #include <sys/ipc.h>
 #include <sys/sem.h>
 #include <errno.h>
-#include <stdio.h>
-#include <unistd.h>
-
 #include <time.h>
+#include <stdio.h>
 
 typedef struct{
 	int shmId;
@@ -114,12 +111,10 @@ int databus_shutdown(){
 		semctl(databus.semId,0,IPC_RMID);
 		databus.semId = 0;
 	}
-	INFO("databus shutdown");
+	INFO("Databus shutdown");
 	return 0;
 }
-#ifndef MIN
-#define MIN(x,y) ((x<y)?x:y)
-#endif
+
 int databus_put(uint8_t* data, size_t len){
 	if(!databus.shmAddr){
 		return 0;

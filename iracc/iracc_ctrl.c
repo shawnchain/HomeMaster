@@ -18,7 +18,7 @@
 #include "databus.h"
 
 
-int main(int argc, char* argv[]){
+int iracc_ctrl_main(int argc, char* argv[]){
 	int rc;
 	if((rc = log_init("/tmp/iracc-ctl.log",ERROR_LEVEL)) < 0){
 		printf("*** warning: log system initialize failed");

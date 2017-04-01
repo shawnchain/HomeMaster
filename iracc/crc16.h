@@ -58,8 +58,7 @@
 #ifndef CRC16_H_
 #define CRC16_H_
 
-#include <unistd.h>
-#include <stdint.h>
+#include <stdlib.h>  /*size_t*/
 
 #define CRC_MODBUS_INIT_VAL 0xFF
 

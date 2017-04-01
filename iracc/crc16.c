@@ -6,7 +6,7 @@
  */
 
 #include "crc16.h"
-#include "stdio.h"
+#include <stdio.h>
 
 #define CRC_TABLE const uint16_t crc16tab[256]
 

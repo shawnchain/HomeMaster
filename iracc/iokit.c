@@ -246,12 +246,15 @@ static int _io_fn_flush(struct IOReader *reader) {
 }
 
 static int _io_fn_read_stream_timeout(struct IOReader *reader) {
-	if (reader->fd < 0)
+	if (reader->fd < 0){
+		//DBG("reader->fd is invalid");
 		return -1;
+	}
 
 	int bytesRead =
 			read(reader->fd, (reader->buffer + reader->bufferLen),
 					(reader->maxBufferLen - reader->bufferLen - 1) /*buffer available*/);
+	//DBG("_io_fn_read_stream_timeout: %d bytes read",bytesRead);
 	if (bytesRead > 0) {
 		reader->bufferLen += bytesRead;
 		reader->lastRead = get_time_milli_seconds();
@@ -266,7 +269,7 @@ static int _io_fn_read_stream_timeout(struct IOReader *reader) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK) {
 			bytesRead = 0;
 		} else {
-			ERROR("*** io_readtimeout read() %d, error: %s", bytesRead,
+			ERROR("*** _io_fn_read_stream_timeout read() %d, error: %s", bytesRead,
 					strerror(errno));
 		}
 	}

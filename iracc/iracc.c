@@ -29,53 +29,49 @@
 #include "iracc.h"
 #include "modbus.h"
 #include "utils.h"
+#include "databus.h"
 
 static int _iracc_open();
 static int _iracc_close();
-static int _iracc_reading(int fd);
-static void _iracc_send(ModbusRequest *req);
+
+static void _modbus_received(ModbusRequest *req, ModbusResponse *resp);
 
 typedef enum{
 	device_state_close = 0,
 	device_state_open,
 	//device_wait_for_response,
-	device_state_init_start,
-	device_state_init_complete,
+	//device_state_init_start,
+	//device_state_init_complete,
 	device_state_ready,
 	//state_closing, // mark for closing
 }DeviceState;
 
-#define MAX_IO_ERROR_COUNT 10
-#define WAIT_RESPONSE_TIMEOUT 3
-#define IRACC_DEFAULT_ADDRESS 0x01
 
+typedef enum{
+	init_check_status = 0,
+	init_check_status_wait,
+	init_check_connection,
+	init_check_connection_wait,
+	init_success,
+	init_failure,
+}InitState;
+
+/*
+ * Query State
+ */
+typedef enum{
+	poll_state_init = 0,
+	poll_state_start,
+	poll_state_complete,
+}PollState;
+
+#define MAX_IO_ERROR_COUNT 10
+#define IRACC_DEFAULT_ADDRESS 0x01
 
 #define IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START 0x07D0
 #define IRACC_INTERNAL_UNIT_STATUS_REG_COUNT 6
 
 #define UNIT_ID(reg) ((reg - IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START) / 6)
-
-typedef struct {
-	// parent IO reader
-	struct IOReader reader;
-	char devname[32];
-	int32_t  baudrate;
-	DeviceState state;
-	DeviceCallback callback;
-	uint32_t rxcount;
-	uint8_t errcount;
-	time_t last_reopen;
-
-	// IRACC status
-	uint8_t connectedUnitMask[8]; // supports up to 64 internal units
-	uint8_t connectedUnitCount;
-
-	ModbusRequest *currentRequest;
-	ModbusRequest *queuedRequest;
-	time_t last_request_sent;
-}IRACC;
-
-IRACC iracc;
 
 typedef struct{
 	uint8_t unitId;
@@ -89,41 +85,69 @@ typedef struct{
 	uint8_t temperatureSensorOK;
 }InternalUnitStatus;
 
-static void _iracc_task_check_status();
-static bool _iracc_task_process_queued_request();
-static void _iracc_task_process_response_timeout();
-static void _handle_iracc_response(uint8_t *data,size_t len);
-static void _handle_gateway_status(uint8_t *data, size_t len);
-static void _handle_internal_unit_connection(uint8_t *data, size_t len);
-static InternalUnitStatus* _handle_internal_unit_status(uint8_t unitId, uint8_t *data, size_t len);
+typedef struct {
+	// parent IO reader
+	char devname[32];
+	int32_t  baudrate;
+	DeviceState state;
+	DeviceCallback callback;
+	uint32_t rxcount;
+	uint8_t errcount;
+	time_t last_reopen;
+
+	InitState initState;
+
+	// IRACC status
+	uint8_t connectedUnitCount;
+	uint8_t connectedUnitIDs[64];
+	InternalUnitStatus connectedUnitStatus[64];
+
+	// polling
+	uint16_t pollingIntervalSeconds;
+	uint16_t pollingWaitTimeoutSeconds;
+	time_t last_polling_task_time;		 // start time of the polling task
+	time_t last_polling_query_time; // start time of the polling request in one polling task
+	PollState pollingState;
+	uint8_t pollingUnitIndex; // the current polling unit index [0..connectedUnitCount]
+
+	// modbus communication
+	//ModbusRequest *currentRequest;
+	//ModbusRequest *queuedRequest;
+	//ModbusResponse *currentResponse;
+	//time_t last_request_sent;
+}IRACC;
+
+IRACC iracc;
+
+
+static void _iracc_task_initialize();
+static void _iracc_task_polling_iu_status();
+static int _handle_gateway_status_response(ModbusResponse *resp);
+static int _handle_internal_unit_connection_response(ModbusResponse *resp);
+static InternalUnitStatus* _handle_internal_unit_status_response(uint8_t unitId, ModbusResponse *resp);
 
 int iracc_init(const char* devname, int32_t baudrate, DeviceCallback callback){
 	// init context
 	bzero(&iracc,sizeof(IRACC));
+
+	// setup defaults
+	iracc.pollingIntervalSeconds = 5;
+	iracc.pollingWaitTimeoutSeconds = 1;
+
 	// copy the parameters
 	strncpy(iracc.devname,devname,31);
 	iracc.baudrate = baudrate;
 	iracc.callback = callback;
 	// open device
 	_iracc_open();
-	//init modbus with IRACC default address
-	modbus_init(IRACC_DEFAULT_ADDRESS);
 
 	// init shared memory for controller info
 	return 0;
 }
 
 int iracc_shutdown(){
-	_iracc_close();
-	if(iracc.currentRequest){
-		free(iracc.currentRequest);
-		iracc.currentRequest = NULL;
-	}
-	if(iracc.queuedRequest){
-		free(iracc.queuedRequest);
-		iracc.queuedRequest = NULL;
-	}
-	return 0;
+	INFO("IRACC shutdown");
+	return _iracc_close();
 }
 
 /*
@@ -142,182 +166,183 @@ int iracc_run(){
 		}
 		break;
 	case device_state_open:
-		_iracc_task_check_status();
+		_iracc_task_initialize();
 		break;
-	case device_state_init_start:
-	case device_state_init_complete:
 	case device_state_ready:
+		// polling the IU status
+		_iracc_task_polling_iu_status();
 		break;
 	default:
 		break;
 	}
 
-	// internal tasks
-	_iracc_task_process_queued_request();
-	_iracc_task_process_response_timeout();
-	//dispatch to the io reader runloop;
-	IO_RUN(&iracc.reader);
+	// call the modbus runloop
+	modbus_run();
 
 	return 0;
 }
 
-/*
- * IO runloop callback
- */
-static void _on_io_callback(int fd, io_state state){
-	switch(state){
-		case io_state_read:
-			_iracc_reading(fd);
-			break;
-		/*
-		case io_state_write:
-			_iracc_writing(fd);
-			break;
-		*/
-		case io_state_error:
-			INFO("Polled error, closing port...");
-			_iracc_close();
-			break;
-		case io_state_idle:
-			//DBG("iracc idle");
-			break;
-		default:
-			break;
+static void _modbus_receive_error(){
+	// something wrong, increase the error count;
+	if(++iracc.errcount >= MAX_IO_ERROR_COUNT){
+		INFO("too much receiving error encountered %d, closing port...",iracc.errcount);
+		_iracc_close();
 	}
 }
+static void _modbus_received(ModbusRequest *req, ModbusResponse *resp){
+	if(iracc.state == device_state_open){
+		// initialize state
+		int result = -1;
+		if(req->reg == REG_GATEWAY_STATUS){
+			// handles the gateway status query
+			result = _handle_gateway_status_response(resp);
+		}else if(req->reg == REG_IU_CONNECTION){
+			result = _handle_internal_unit_connection_response(resp);
+		}else if(resp != NULL){
+			INFO("Unknown response 0x%02x 0x%02x 0x%02x",resp->addr,resp->code,resp->payload.dataLen);
+		}
+		// something wrong
+		if(result == -1){
+			_modbus_receive_error();
+		}
 
-/*
- * callback of IOKit Stream
- */
-static void _on_stream_read(uint8_t* data, size_t len){
-	//receive a line from IRACC
-	switch(iracc.state){
-	case device_state_open:
-	case device_state_init_start:
-	case device_state_init_complete:
-	case device_state_ready:
-		//DBG("RECV: %.*s",len,data);
-		hexdump(data,len,1/*<<*/);
-		_handle_iracc_response(data,len);
-		break;
-	default:
-		break;
-	}
-	return ;
-}
+	}else if(iracc.state == device_state_ready){
+		// ready state
+		if(resp == NULL){
+			DBG("modbus receive timeout");
+			_modbus_receive_error();
+			return;
+		}
 
-/*
- * handles the IRACC(modbus) response. Called when stream read timeout(300ms)
- */
-static inline void _handle_iracc_response(uint8_t *data,size_t len){
-	if(len == 0) return;
-
-	ModbusResponse *resp = modbus_recv(data,len);
-	if(!resp){
-		return;
-	}
-
-	if(!iracc.currentRequest){
-		WARN("Unexpected response from 0x%02x, code: 0x%02x, payloadLength: %d. current request is null",resp->addr, resp->code,resp->payload.dataLen);
-		goto exit;
-	}
-	if(iracc.currentRequest->addr != resp->addr){
-		WARN("Unexpected response from 0x%02x, code: 0x%02x, payloadLength: %d. current request is null",resp->addr, resp->code,resp->payload.dataLen);
-		goto exit;
-	}
-
-	// dispatch to corresponding handlers
-	switch(iracc.currentRequest->reg){
-	case REG_GATEWAY_STATUS:
-		// handles the gateway status query
-		_handle_gateway_status(resp->payload.data,resp->payload.dataLen);
-		break;
-	case REG_CONNECT_STATUS:
-		_handle_internal_unit_connection(resp->payload.data,resp->payload.dataLen);
-		break;
-	default:
-	{
-		if(iracc.currentRequest->reg >= IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START){
+		if(req->reg >= IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START){
 			// handle the internal unit status
-			InternalUnitStatus *s = _handle_internal_unit_status(UNIT_ID(iracc.currentRequest->reg), resp->payload.data,resp->payload.dataLen);
+			uint8_t unitid = UNIT_ID(req->reg);
+			InternalUnitStatus *s = _handle_internal_unit_status_response(unitid, resp);
 			if(s){
-				// the status
+				// NOTE - store the received unit status
+				memcpy(iracc.connectedUnitStatus + unitid,s,sizeof(InternalUnitStatus));
 				DBG("unit %d - power: %d, wind: %d, i_temp: %.1f, p_temp: %.1f",s->unitId, s->powerOn, s->windLevel,s->interiorTemerature,s->presetTemperature);
 				free(s);
 			}
 		}else{
 			INFO("Unknown response 0x%02x 0x%02x 0x%02x",resp->addr,resp->code,resp->payload.dataLen);
 		}
-	}
-	break;
-	}
-exit:
-	if(iracc.currentRequest){
-		free(iracc.currentRequest);
-		iracc.currentRequest = NULL;
-	}
-	if(resp){
-		free(resp);
+	}else{
+		INFO("***illegal iracc.state: %d, got modbus data 0x%02x 0x%02x 0x%02x",iracc.state,resp->addr,resp->code,resp->payload.dataLen);
 	}
 }
 
 /////////////////////////////////////////////////////////////////////
 #pragma mark - Interanl implementations
 
-void _iracc_task_check_status(){
-	// check iracc status
-	switch(iracc.state){
-	case device_state_open:
-		// check gateway status
-		DBG("state: OPEN->INIT_START");
-		iracc_read_gateway_status();
-		iracc.state = device_state_init_start;
+/**
+ * Initialize the module states by checking adapter status and the IU connections
+ */
+static void _iracc_task_initialize(){
+	// perform initialize after device is open
+	switch(iracc.initState){
+	case init_check_status:
+		// send gateway status check request
+		DBG("checking gateway status");
+		if(iracc_read_gateway_status() == 0){
+			iracc.initState = init_check_status_wait;
+		}else{
+			iracc.initState = init_failure;
+		}
 		break;
-	case device_state_init_complete:
-		// check connected devices
-		DBG("state: INIT_COMPLETE->(iracc_read_internal_unit_connection)->READY");
-		iracc_read_internal_unit_connection();
+	case init_check_status_wait:
+		// see _handle_gateway_status()
+		break;
+	case init_check_connection:
+		// send request for check gateway status
+		DBG("checking IU connections");
+		if(iracc_read_internal_unit_connection() == 0){
+			iracc.initState = init_check_connection_wait;
+		}else{
+			iracc.initState = init_failure;
+		}
+		break;
+	case init_check_connection_wait:
+		// see _handle_internal_unit_connection()
+		break;
+	case init_success:
 		iracc.state = device_state_ready;
+		INFO("IRACC device is ready!");
+		break;
+	case init_failure:
+		INFO("IRACC device initialize failed!");
+		iracc.initState = init_check_status;
+		_iracc_close(); // close port if initialize failed;
 		break;
 	default:
 		break;
 	}
 }
-/*
- * tasks routine
- * check if currentRequest exists and free it when time out
+
+/**
+ *	polling the IU status by sending the read_registry command one by one
  */
-void _iracc_task_process_response_timeout(){
-	if(iracc.currentRequest == NULL || iracc.state == device_state_close){
+static void _iracc_task_polling_iu_status(){
+	if(iracc.connectedUnitCount == 0 || iracc.state != device_state_ready){
 		return;
 	}
-	if(time(NULL) - iracc.last_request_sent > WAIT_RESPONSE_TIMEOUT){
-		// wait response timeout
-		INFO("wait IRACC response timeout!");
-		free(iracc.currentRequest);
-		iracc.currentRequest = NULL;
-		if(iracc.state == device_state_init_start){
-			DBG("state: INIT_START->OPEN");
-			iracc.state = device_state_open;
+
+	// pause a while between the polling task.
+	if(iracc.pollingState == poll_state_init && iracc.pollingUnitIndex == 0){
+		if(time(NULL) - iracc.last_polling_task_time < iracc.pollingIntervalSeconds){
+			return;
+		}
+		DBG("polling task started");
+	}
+
+	uint8_t unitId = iracc.connectedUnitIDs[iracc.pollingUnitIndex];
+
+	switch(iracc.pollingState){
+	case poll_state_init:
+		if(iracc.pollingUnitIndex >= iracc.connectedUnitCount){
+			iracc.pollingState = poll_state_complete;
+			break;
+		}
+
+		DBG("polling unit[%d]",unitId);
+		iracc.last_polling_query_time = time(NULL);
+		if(iracc_read_internal_unit_status(unitId) == 0){
+			iracc.pollingState = poll_state_start;
+		}else{
+			WARN("Error query status for unit id %d",iracc.pollingUnitIndex);
+			iracc.pollingUnitIndex++; // move to the next
+		}
+		break;
+	case poll_state_start:{
+		if(iracc.pollingUnitIndex >= iracc.connectedUnitCount){
+			iracc.pollingState = poll_state_complete;
+			break;
+		}
+
+		InternalUnitStatus *status = &(iracc.connectedUnitStatus[iracc.pollingUnitIndex]);
+		if(status->unitId == unitId){
+			// the status slot[pollingUnitIndex] is filled, which means we did receive the unit status.
+			DBG("polled unit[%d] status",status->unitId);
+			iracc.pollingUnitIndex++; // move to the next - FIXME - what if read timeout?
+		}else if(time(NULL) - iracc.last_polling_query_time > iracc.pollingWaitTimeoutSeconds){
+			// polling timeout, move to the next one
+			WARN("polling unit[%d] status timeout",status->unitId);
+			iracc.pollingUnitIndex++;
+			iracc.pollingState = poll_state_init;
 		}
 	}
-}
-
-/*
- * tasks routine
- * process queued requests
- */
-static bool _iracc_task_process_queued_request(){
-	if(iracc.state == device_state_close){
-		return false;
+		break;
+	case poll_state_complete:
+		// save status into the shared memory
+		DBG("polling task completed. Total %d unit status received",unitId);
+		//TODO - dump to the shared memory
+		iracc.pollingUnitIndex = 0;
+		iracc.pollingState = poll_state_init;
+		iracc.last_polling_task_time = time(NULL);
+		break;
+	default:
+		break;
 	}
-	ModbusRequest *req = iracc.queuedRequest;
-	if(req){
-		DBG("dequeue request 0x%02x 0x%02x 0x%04x",req->addr, req->code,req->reg);
-		iracc.queuedRequest = NULL;
-		_iracc_send(req);
-	}
-	return true;
 }
 
 static int _iracc_open(){
@@ -331,55 +356,24 @@ static int _iracc_open(){
 	iracc.state = device_state_open;
 	// set unblock and select
 	serial_port_set_nonblock(fd,1);
-
-	io_add(fd,_on_io_callback);
-	//IO_OPEN(&iracc.reader,fd,_on_io_callback);
-
-	IO_MAKE_STREAM_READER(&iracc.reader,fd,_on_stream_read,300 /*ms to timeout*/);
+	//init modbus on port open
+	modbus_init(IRACC_DEFAULT_ADDRESS,fd,NULL,_modbus_received);
 	INFO("IRACC port \"%s\" opened, baudrate=%d, fd=%d",iracc.devname,iracc.baudrate,fd);
-
 	return 0;
 }
 
 static int _iracc_close(){
 	if(iracc.state == device_state_close) return 0;
 
-	if(iracc.reader.fd > 0){ // TODO - move to reader->fnClose();
-		io_remove(iracc.reader.fd);
-		IO_CLOSE(&iracc.reader);
-	}
+	modbus_close();
+
+	iracc.pollingState = poll_state_init;
 	iracc.state = device_state_close;
+	iracc.initState = init_check_status;
 	iracc.errcount = 0;
 	iracc.rxcount = 0;
 	INFO("IRACC port closed.");
 	return 0;
-}
-
-static int _iracc_reading(int fd){
-	if(fd != iracc.reader.fd) return -1;
-	int rc = IO_READ(&iracc.reader);
-	if(rc < 0 ){
-		// RC = 0 means nothing to read.
-		if(++iracc.errcount >= MAX_IO_ERROR_COUNT){
-			INFO("too much receiving error encountered %d, closing port...",iracc.errcount);
-			_iracc_close();
-		}
-		return -1;
-	}else if(rc == 0){
-		//DBG("IRACC is idle");
-	}
-	iracc.errcount = 0;
-	return 0;
-}
-
-static inline void _iracc_send(ModbusRequest *req){
-	// get from queue
-	if(modbus_send(req,iracc.reader.fd,NULL)){
-		iracc.currentRequest = req;
-		iracc.last_request_sent = time(NULL);
-	}else{
-		free(req);
-	}
 }
 
 /////////////////////////////////////////////////////////////////////
@@ -392,61 +386,104 @@ static inline void _iracc_send(ModbusRequest *req){
  * << 01 04 02 00 01 78 F0
  */
 int iracc_read_gateway_status(){
-	if(iracc.queuedRequest){
-		ERROR("queued request is full, operation aborted:[read_gateway_status]");
+	ModbusRequest *req = modbus_alloc_request(0x04/*read*/,REG_GATEWAY_STATUS/*the status*/);
+	if(!req){
 		return -1;
 	}
-	ModbusRequest *req = modbus_alloc_request(0x04/*read*/,REG_GATEWAY_STATUS/*the status*/);
-	iracc.queuedRequest = req;
+	if(modbus_enqueue_request(req) == -1){
+		ERROR("queued request is full, operation aborted:[read_gateway_status]");
+		free(req);
+		return -1;
+	}
 	DBG("enqueue request 0x%02x 0x%02x 0x%04x",req->addr, req->code,req->reg);
 	return 0;
 }
-static void _handle_gateway_status(uint8_t *data, size_t len){
-	if(len == 2){
-		uint16_t status = MAKE_UINT16(data[0],data[1]);
-		if(status == 1){
-			if(iracc.state == device_state_init_start){
-				iracc.state = device_state_init_complete;
+
+static int _handle_gateway_status_response(ModbusResponse *resp){
+	if(resp){
+		uint8_t *data = resp->payload.data;
+		size_t len = resp->payload.dataLen;
+		if(len == 2){
+			uint16_t status = MAKE_UINT16(data[0],data[1]);
+			if(status == 1){
+				iracc.initState = init_check_connection; // go next check
+				INFO("gateway respond OK");
+				return 0;
+			}else{
+				INFO("gateway respond negative");
 			}
-			INFO("IRACC device is ready");
-		}else{
-			INFO("IRACC device is NOT ready");
 		}
+	}else{
+		INFO("read gateway status timeout");
 	}
+	iracc.initState = init_failure;
+	return -1;
 }
 
 /**
  * Get the count of connected internal units
  */
 int iracc_read_internal_unit_connection(){
-	if(iracc.queuedRequest){
+	ModbusRequest *req = modbus_alloc_request(0x04/*read*/,REG_IU_CONNECTION/*the internal unit connection status*/);
+	if(!req) return -1;
+	req->regCount = 0x04; // query for 4 regs, in 8 bytes
+	if(modbus_enqueue_request(req) == -1){
 		ERROR("queued request is full, operation aborted:[read_gateway_status]");
+		free(req);
 		return -1;
 	}
-	ModbusRequest *req = modbus_alloc_request(0x04/*read*/,REG_CONNECT_STATUS/*the internal unit connection status*/);
-	req->regCount = 0x04; // query for 4 regs, in 8 bytes
-	iracc.queuedRequest = req;
 	DBG("enqueue request 0x%02x 0x%02x 0x%04x",req->addr, req->code,req->reg);
 	return 0;
 }
-static void _handle_internal_unit_connection(uint8_t *data, size_t len){
+static int _handle_internal_unit_connection_response(ModbusResponse *resp){
+	if(!resp){
+		INFO("read internal unit connection timeout");
+		goto failure;
+	}
+
+	uint8_t *data= resp->payload.data;
+	size_t len  = resp->payload.dataLen;
 	//check internal unit connections
-	if(len == 8){
-		// valid internal unit status
-		uint8_t connectedIU  = 0;
-		hexdump(data,len,-1);
-		for(int i = 0;i<8;i++){
-			uint8_t b = data[i];
-			iracc.connectedUnitMask[i] = b;
-			for(int j = 0;j<8;j++){
-				if((b >> j) & 1){
-					connectedIU++;
-				}
+	if(len != 8){
+		goto failure;
+	}
+
+	// reset the connected unit data first.
+	for(int i = 0;i<64;i++){
+		iracc.connectedUnitIDs[i] = -1;
+		iracc.connectedUnitStatus[i].unitId = -1;
+	}
+
+	uint8_t connectedIU  = 0;
+	hexdump(data,len,-1);
+	for(int i = 0;i<8;i++){
+		uint8_t b = data[i];
+		for(int j = 0;j<8;j++){
+			if((b >> j) & 1){
+				iracc.connectedUnitIDs[connectedIU++] = (i * 8 + j);
 			}
 		}
-		iracc.connectedUnitCount = connectedIU;
-		INFO("IRACC connected to %d internal units",connectedIU);
 	}
+	iracc.connectedUnitCount = connectedIU;
+	if(connectedIU > 0){
+		// debug out the connected IUs
+		char buf[512];
+		int idx = sprintf(buf,"%d internal units connected, [",connectedIU);
+		for(int k = 0;k<connectedIU;k++){
+			idx += sprintf(buf + idx,"%d,",iracc.connectedUnitIDs[k]);
+		}
+		sprintf(buf+idx,"]");
+		INFO("%s",buf);
+	}else{
+		INFO("0 internal units connected");
+	}
+	// check success
+	iracc.initState = init_success;
+	return 0;
+
+failure:
+	iracc.initState = init_failure;
+	return -1;
 }
 
 /*
@@ -454,21 +491,28 @@ static void _handle_internal_unit_connection(uint8_t *data, size_t len){
  * @pram IUID the internal unit id that in range [0 ... 63]
  */
 int iracc_read_internal_unit_status(uint8_t IUID){
-	if(iracc.queuedRequest){
-		ERROR("queued request is full, operation aborted:[iracc_read_internal_unit_status]");
-		return -1;
-	}
 	if(IUID >= 64 /*max 64 internal units supported*/){
 		return -1;
 	}
 	uint16_t regAddr = IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START + (IUID * IRACC_INTERNAL_UNIT_STATUS_REG_COUNT);
 	ModbusRequest *req = modbus_alloc_request(0x04/*read*/,regAddr/*the internal unit status registry*/);
+	if(!req) return -1;
 	req->regCount = IRACC_INTERNAL_UNIT_STATUS_REG_COUNT/*0x06*/; // query for 6 regs, in 12 bytes
-	iracc.queuedRequest = req;
+	if(modbus_enqueue_request(req) == -1){
+		ERROR("queued request is full, operation aborted:[iracc_read_internal_unit_status]");
+		return -1;
+	}
 	DBG("enqueue request 0x%02x 0x%02x 0x%04x",req->addr, req->code,req->reg);
 	return 0;
 }
-static InternalUnitStatus* _handle_internal_unit_status(uint8_t unitId, uint8_t *data, size_t len){
+static InternalUnitStatus* _handle_internal_unit_status_response(uint8_t unitId, ModbusResponse *resp){
+	if(resp == NULL){
+		INFO("read internal unit status timeout");
+		return NULL;
+	}
+
+	uint8_t *data = resp->payload.data;
+	size_t len = resp->payload.dataLen;
 	if(len != 12){
 		// incorrect data length
 		return NULL;

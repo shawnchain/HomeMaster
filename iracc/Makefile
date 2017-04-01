@@ -11,22 +11,36 @@ GIT_VERSION := $(shell git describe --abbrev=6 --always --tags)
 
 CC ?= gcc
 CFLAGS += -Wall -ggdb -DDEBUG -DVERSION=\"$(GIT_VERSION)\"
-HEADERS = gsm.h utils.h serial_port.h log.h iokit.h
+HEADERS = lib.h defs.h object.h utils.h serial_port.h log.h iokit.h 
 
-all: iracc-gate iracc-ctrl
+LD ?= gcc
+#LDFLAGS += -Wall -g
 
-iracc-gate: main.o serial_port.o utils.o log.o iracc.o iokit.o crc16.o modbus.o databus.o
-	$(CC) $(LDFLAGS) -o $@ $^ 
+#PCH_H = lib.h
+#PCH = lib.h.gch
 
-iracc-ctrl: iracc_control.o utils.o log.o databus.o
-	$(CC) $(LDFLAGS) -o $@ $^
+OBJS = main.o serial_port.o utils.o log.o iracc.o iokit.o crc16.o modbus.o databus.o iracc_ctrl.o iracc_gate.o object.o
+OBJS += fifo.o
+
+LIBS =
+
+all: iracc
+
+iracc: $(OBJS) 
+	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
 
 %.o: %.c $(HEADERS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+#%.o: %.c $(HEADERS) $(PCH)
+#	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(PCH): $(PCH_H)
+	$(CC) $(CFLAGS) -x c-header $> $^
+
 install: iracc-gate 
-	cp -f iracc-gate $(PREFIX)/sbin/
+	cp -f iracc $(PREFIX)/sbin/
 
 clean:
-	@rm -f iracc-gate iracc-ctrl *.o
+	@rm -f iracc *.o *.gch
 

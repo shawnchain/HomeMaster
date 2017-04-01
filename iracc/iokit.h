@@ -71,10 +71,10 @@ struct IOWriter{
 void io_open(struct IOReader *reader, int fd, void callback);
 #endif
 
-#define IO_READ(x) (((struct IOReader *)(x))->fnRead)?((struct IOReader *)(x))->fnRead((struct IOReader *)(x)):-1
-#define IO_CLOSE(x) (((struct IOReader *)(x))->fnClose)? ((struct IOReader *)x)->fnClose((struct IOReader *)x):-1
-#define IO_FLUSH(x) (((struct IOReader *)(x))->fnFlush)? ((struct IOReader *)x)->fnFlush((struct IOReader *)x):-1
-#define IO_RUN(x) (((struct IOReader *)(x))->fnRun)?((struct IOReader *)x)->fnRun((struct IOReader *)x):-1
+#define IO_READ(x) ((((struct IOReader *)(x))->fnRead)?((struct IOReader *)(x))->fnRead((struct IOReader *)(x)):-1)
+#define IO_CLOSE(x) ((((struct IOReader *)(x))->fnClose)? ((struct IOReader *)x)->fnClose((struct IOReader *)x):-1)
+#define IO_FLUSH(x) ((((struct IOReader *)(x))->fnFlush)? ((struct IOReader *)x)->fnFlush((struct IOReader *)x):-1)
+#define IO_RUN(x) ((((struct IOReader *)(x))->fnRun)?((struct IOReader *)x)->fnRun((struct IOReader *)x):-1)
 
 #define IO_MAKE_LINE_READER(x,fd,cb) io_make_line_reader((struct IOReader *)x,fd,cb)
 void io_make_line_reader(struct IOReader *reader, int fd,  void* readercb);

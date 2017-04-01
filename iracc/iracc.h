@@ -12,7 +12,7 @@
 
 #define REG_GATEWAY_STATUS 0x0000 // Gateway Status
 
-#define REG_CONNECT_STATUS 0x0001 // Connection Status
+#define REG_IU_CONNECTION 0x0001 // Connection Status
 #define REG_30003  0x0002
 #define REG_30004  0x0003
 #define REG_30005  0x0004
@@ -36,6 +36,7 @@ int iracc_run();
 
 int iracc_read_gateway_status();
 int iracc_read_internal_unit_connection();
+int iracc_read_internal_unit_status(uint8_t IUID);
 
 void iracc_test();
 
