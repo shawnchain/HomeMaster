@@ -119,6 +119,8 @@ typedef struct {
 
 IRACC iracc;
 
+#define DEFAULT_POLLING_INTERVAL 8
+#define DEFAULT_POLLING_WAITTIMEOUT 1
 
 static void _iracc_task_initialize();
 static void _iracc_task_polling_iu_status();
@@ -131,8 +133,8 @@ int iracc_init(const char* devname, int32_t baudrate, DeviceCallback callback){
 	bzero(&iracc,sizeof(IRACC));
 
 	// setup defaults
-	iracc.pollingIntervalSeconds = 5;
-	iracc.pollingWaitTimeoutSeconds = 1;
+	iracc.pollingIntervalSeconds = DEFAULT_POLLING_INTERVAL;
+	iracc.pollingWaitTimeoutSeconds = DEFAULT_POLLING_WAITTIMEOUT;
 
 	// copy the parameters
 	strncpy(iracc.devname,devname,31);
@@ -159,8 +161,8 @@ int iracc_run(){
 	switch(iracc.state){
 	case device_state_close:
 		// just re-open the device
-		if(t - iracc.last_reopen > 10/*config.tnc[0].current_reopen_wait_time*/){
-			//config.tnc[0].current_reopen_wait_time += 30; // increase the reopen wait wait time
+		if(t - iracc.last_reopen > 10/*config.iracc[0].current_reopen_wait_time*/){
+			//config.iracc[0].current_reopen_wait_time += 30; // increase the reopen wait wait time
 			DBG("reopening IRACC port...");
 			_iracc_open();
 		}
@@ -221,7 +223,7 @@ static void _modbus_received(ModbusRequest *req, ModbusResponse *resp){
 			if(s){
 				// NOTE - store the received unit status
 				memcpy(iracc.connectedUnitStatus + unitid,s,sizeof(InternalUnitStatus));
-				DBG("unit %d - power: %d, wind: %d, i_temp: %.1f, p_temp: %.1f",s->unitId, s->powerOn, s->windLevel,s->interiorTemerature,s->presetTemperature);
+				DBG("unit %d - mode: %d, power: %d, wind: %d, i_temp: %.1f, p_temp: %.1f",s->unitId, s->workingMode, s->powerOn, s->windLevel,s->interiorTemerature,s->presetTemperature);
 				free(s);
 			}
 		}else{
@@ -322,8 +324,9 @@ static void _iracc_task_polling_iu_status(){
 		InternalUnitStatus *status = &(iracc.connectedUnitStatus[iracc.pollingUnitIndex]);
 		if(status->unitId == unitId){
 			// the status slot[pollingUnitIndex] is filled, which means we did receive the unit status.
-			DBG("polled unit[%d] status",status->unitId);
+			DBG("polled unit[%d] status success",status->unitId);
 			iracc.pollingUnitIndex++; // move to the next - FIXME - what if read timeout?
+			iracc.pollingState = poll_state_init;
 		}else if(time(NULL) - iracc.last_polling_query_time > iracc.pollingWaitTimeoutSeconds){
 			// polling timeout, move to the next one
 			WARN("polling unit[%d] status timeout",status->unitId);
@@ -334,7 +337,7 @@ static void _iracc_task_polling_iu_status(){
 		break;
 	case poll_state_complete:
 		// save status into the shared memory
-		DBG("polling task completed. Total %d unit status received",unitId);
+		DBG("polling task completed. Total %d unit status polled",iracc.pollingUnitIndex);
 		//TODO - dump to the shared memory
 		iracc.pollingUnitIndex = 0;
 		iracc.pollingState = poll_state_init;
@@ -456,14 +459,33 @@ static int _handle_internal_unit_connection_response(ModbusResponse *resp){
 
 	uint8_t connectedIU  = 0;
 	hexdump(data,len,-1);
+#define LSB_MODE 1
+#if LSB_MODE
 	for(int i = 0;i<8;i++){
 		uint8_t b = data[i];
-		for(int j = 0;j<8;j++){
+		// bit mask: 0000 0011 0000 0000
+		//           ^^^^ ^^^^ ^^^^ ^^^^
+		// device id 7654 3210 FEDC BA98
+		for(int j = 0;j<8;j++){ // start from LSB
 			if((b >> j) & 1){
 				iracc.connectedUnitIDs[connectedIU++] = (i * 8 + j);
 			}
 		}
 	}
+#else
+	// MSB mode
+	for(int i = 0;i<8;i++){
+		uint8_t b = data[i];
+		// 1100 0000 0000 0000
+		// ^^^^ ^^^^ ^^^^ ^^^^
+		// 0123 4567 89AB CDEF
+		for(int j = 7;j>=0;j--){ // start from MSB
+			if((b >> j) & 1){
+				iracc.connectedUnitIDs[connectedIU++] = (i * 8 + (7 - j));
+			}
+		}
+	}
+#endif
 	iracc.connectedUnitCount = connectedIU;
 	if(connectedIU > 0){
 		// debug out the connected IUs
@@ -518,6 +540,8 @@ static InternalUnitStatus* _handle_internal_unit_status_response(uint8_t unitId,
 		return NULL;
 	}
 
+	hexdump(data,len,-1);
+
 	InternalUnitStatus *status = malloc(sizeof(InternalUnitStatus));
 	memset(status,0,sizeof(InternalUnitStatus));
 	status->unitId = unitId;
@@ -527,14 +551,14 @@ static InternalUnitStatus* _handle_internal_unit_status_response(uint8_t unitId,
 	status->powerOn = data[i++] & 1; //00 开关off 开关=0x00&0x01 1=开 0=关
 	status->filterCleanupFlag = data[i++];
 	status->workingMode = (data[i++] & 0x0f);
-	status->presetTemperature = ((float)(data[i] * 100 + data[i+1])) / 10.0f;
+	status->presetTemperature = ((float)(data[i] * 0x100 + data[i+1])) / 10.0f;
 	i+=2;
 
 	status->errorCode = (data[i] << 8 | data[i+1]);
 	i+=2;
 
 	//status->errorCode = ntohs(status->errorCode);
-	status->interiorTemerature = ((float)(data[i] * 100 + data[i+1])) / 10.0f;
+	status->interiorTemerature = ((float)(data[i] * 0x100 + data[i+1])) / 10.0f;
 	i+=2;
 
 	status->temperatureSensorOK = ((data[i] == 0x08) && data[i+1] == 0x00);
