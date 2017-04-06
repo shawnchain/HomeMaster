@@ -15,7 +15,7 @@
 
 #define HI_BYTE(x) (uint8_t)(x >> 8 & 0xff)
 #define LO_BYTE(x) (uint8_t)(x & 0xff)
-#define MAKE_UINT16(hi,lo) (uint16_t)((hi << 8 & 0xff00) | (lo & 0xff))
+#define MAKE_UINT16(hi,lo) (uint16_t)((hi & 0xff) << 8 | (lo & 0xff))
 
 typedef struct{
 	Object object;

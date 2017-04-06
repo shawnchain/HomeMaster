@@ -10,7 +10,7 @@
 
 #include <stdlib.h>
 
-#define REG_GATEWAY_STATUS 0x0000 // Gateway Status
+#define REG_GW_STATUS 0x0000 // Gateway Status
 
 #define REG_IU_CONNECTION 0x0001 // Connection Status
 #define REG_30003  0x0002

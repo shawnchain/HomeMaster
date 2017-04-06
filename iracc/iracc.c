@@ -143,7 +143,6 @@ int iracc_init(const char* devname, int32_t baudrate, DeviceCallback callback){
 	// open device
 	_iracc_open();
 
-	// init shared memory for controller info
 	return 0;
 }
 
@@ -191,11 +190,14 @@ static void _modbus_receive_error(){
 		_iracc_close();
 	}
 }
+/*
+ * callback from modbus on response received
+ */
 static void _modbus_received(ModbusRequest *req, ModbusResponse *resp){
 	if(iracc.state == device_state_open){
-		// initialize state
+		// under initialize state, we will issue REG_GATEWAY_STATUS and REG_IU_CONNECTION queries
 		int result = -1;
-		if(req->reg == REG_GATEWAY_STATUS){
+		if(req->reg == REG_GW_STATUS){
 			// handles the gateway status query
 			result = _handle_gateway_status_response(resp);
 		}else if(req->reg == REG_IU_CONNECTION){
@@ -389,7 +391,7 @@ static int _iracc_close(){
  * << 01 04 02 00 01 78 F0
  */
 int iracc_read_gateway_status(){
-	ModbusRequest *req = modbus_alloc_request(0x04/*read*/,REG_GATEWAY_STATUS/*the status*/);
+	ModbusRequest *req = modbus_alloc_request(0x04/*read*/,REG_GW_STATUS/*the status*/);
 	if(!req){
 		return -1;
 	}
@@ -401,24 +403,30 @@ int iracc_read_gateway_status(){
 	DBG("enqueue request 0x%02x 0x%02x 0x%04x",req->addr, req->code,req->reg);
 	return 0;
 }
-
+/*
+ * handles the gw status response
+ * @ModbusResponse the response or NULL if modbus wait timeout.
+ */
 static int _handle_gateway_status_response(ModbusResponse *resp){
-	if(resp){
-		uint8_t *data = resp->payload.data;
-		size_t len = resp->payload.dataLen;
-		if(len == 2){
-			uint16_t status = MAKE_UINT16(data[0],data[1]);
-			if(status == 1){
-				iracc.initState = init_check_connection; // go next check
-				INFO("gateway respond OK");
-				return 0;
-			}else{
-				INFO("gateway respond negative");
-			}
-		}
-	}else{
+	if(!resp){
 		INFO("read gateway status timeout");
+		goto failure;
 	}
+
+	uint8_t *data = resp->payload.data;
+	size_t len = resp->payload.dataLen;
+	if(len == 2){
+		uint16_t status = MAKE_UINT16(data[0],data[1]);
+		if(status == 1){
+			iracc.initState = init_check_connection; // go next check
+			INFO("gateway respond OK");
+			return 0;
+		}else{
+			INFO("gateway respond negative");
+		}
+	}
+
+failure:
 	iracc.initState = init_failure;
 	return -1;
 }
@@ -459,33 +467,18 @@ static int _handle_internal_unit_connection_response(ModbusResponse *resp){
 
 	uint8_t connectedIU  = 0;
 	hexdump(data,len,-1);
-#define LSB_MODE 1
-#if LSB_MODE
-	for(int i = 0;i<8;i++){
-		uint8_t b = data[i];
-		// bit mask: 0000 0011 0000 0000
+	for(int i = 0;i<8;i=i+2){
+		// bit mask: 0000 0000 0000 0011
 		//           ^^^^ ^^^^ ^^^^ ^^^^
-		// device id 7654 3210 FEDC BA98
-		for(int j = 0;j<8;j++){ // start from LSB
-			if((b >> j) & 1){
-				iracc.connectedUnitIDs[connectedIU++] = (i * 8 + j);
+		// device id FEDC BA98 7654 3210
+		uint16_t w = data[i] << 8 | data[i+1];
+		for(int j = 0;j<16;j++){
+			if((w >> j) & 1){
+				iracc.connectedUnitIDs[connectedIU++] = ((i / 2) * 16 + j);
 			}
 		}
 	}
-#else
-	// MSB mode
-	for(int i = 0;i<8;i++){
-		uint8_t b = data[i];
-		// 1100 0000 0000 0000
-		// ^^^^ ^^^^ ^^^^ ^^^^
-		// 0123 4567 89AB CDEF
-		for(int j = 7;j>=0;j--){ // start from MSB
-			if((b >> j) & 1){
-				iracc.connectedUnitIDs[connectedIU++] = (i * 8 + (7 - j));
-			}
-		}
-	}
-#endif
+
 	iracc.connectedUnitCount = connectedIU;
 	if(connectedIU > 0){
 		// debug out the connected IUs
