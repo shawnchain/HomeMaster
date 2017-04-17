@@ -30,7 +30,7 @@
 #include "databus.h"
 
 static void print_help(int argc, char *argv[]);
-static void handle_signals();
+static void _register_signal_handlers();
 
 static struct option long_opts[] = {
 	{ "service", required_argument, 0, 'S', },
@@ -120,8 +120,10 @@ int iracc_gate_main(int argc, char* argv[]){
 		exit(1);
 	}
 
-	//iracc_test();
-	handle_signals();
+#if 0
+	iracc_test();
+#endif
+	_register_signal_handlers();
 
 	while(true){
 		iracc_run();
@@ -158,7 +160,10 @@ static void signal_handler(int sig){
 	log_shutdown();
 	exit(0);
 }
-static void handle_signals(){
+static void _register_signal_handlers(){
 	signal(SIGINT, signal_handler);
+	signal(SIGTERM, signal_handler);
+	signal(SIGSTOP, signal_handler);
+	signal(SIGTSTP, signal_handler);
 	signal(SIGQUIT, signal_handler);
 }

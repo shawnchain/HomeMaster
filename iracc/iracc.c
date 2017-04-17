@@ -15,6 +15,7 @@
 #include <termios.h>
 #include <time.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #include <strings.h>
 #include <sys/select.h>
@@ -33,8 +34,13 @@
 
 static int _iracc_open();
 static int _iracc_close();
+static void _iracc_update_shared_data();
+static int _iracc_print_status(char* buf, size_t bufLen);
 
 static void _modbus_received(ModbusRequest *req, ModbusResponse *resp);
+
+#define IRACC_OP_SUCCESS 0
+#define IRACC_OP_FAILURE -1
 
 typedef enum{
 	device_state_close = 0,
@@ -60,18 +66,34 @@ typedef enum{
  * Query State
  */
 typedef enum{
-	poll_state_init = 0,
-	poll_state_start,
-	poll_state_complete,
-}PollState;
+	read_state_init = 0,
+	read_state_start,
+	read_state_complete,
+}ReadTaskState;
+
+typedef enum{
+	write_state_init = 0,
+	write_state_start,
+	write_state_complete,
+}WriteTaskState;
 
 #define MAX_IO_ERROR_COUNT 10
 #define IRACC_DEFAULT_ADDRESS 0x01
 
 #define IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START 0x07D0
+#define IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_END 0x0950
 #define IRACC_INTERNAL_UNIT_STATUS_REG_COUNT 6
-
 #define UNIT_ID(reg) ((reg - IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START) / 6)
+
+
+#define IRACC_INTERNAL_UNIT_PRESET_REG_ADDR_START 0x07D0
+#define IRACC_INTERNAL_UNIT_PRESET_REG_ADDR_END 0x088D
+#define IRACC_INTERNAL_UNIT_PRESET_REG_COUNT 3
+#define WRITE_UNIT_ID(reg) ((reg - IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START) / 3)
+
+#define IRACC_READ_IU_IDLE() (iracc.readingState == read_state_init && iracc.readingUnitIndex == 0)
+#define IRACC_WRITE_IU_IDLE() (iracc.writingState == write_state_init && iracc.writingCommandIndex == 0)
+#define IRACC_CURRENT_COMMAND() ((iracc.writeCommandCount > 0)?(&iracc.writeCommands[iracc.writingCommandIndex]):NULL)
 
 typedef struct{
 	uint8_t unitId;
@@ -84,6 +106,16 @@ typedef struct{
 	float interiorTemerature;
 	uint8_t temperatureSensorOK;
 }InternalUnitStatus;
+
+typedef struct{
+	//Object object;
+	uint8_t unitId;
+	uint8_t windLevel;  // 0 means not set
+	int8_t powerOn;		// -1 means not set
+	int8_t workingMode; // -1 means not set
+	float presetTemperature;
+	bool responseReceived;
+}InternalUnitCommand;
 
 typedef struct {
 	// parent IO reader
@@ -102,13 +134,26 @@ typedef struct {
 	uint8_t connectedUnitIDs[64];
 	InternalUnitStatus connectedUnitStatus[64];
 
-	// polling
-	uint16_t pollingIntervalSeconds;
-	uint16_t pollingWaitTimeoutSeconds;
-	time_t last_polling_task_time;		 // start time of the polling task
-	time_t last_polling_query_time; // start time of the polling request in one polling task
-	PollState pollingState;
-	uint8_t pollingUnitIndex; // the current polling unit index [0..connectedUnitCount]
+	// reading IU parameters
+	uint16_t readIntervalSeconds;
+	uint16_t readWaitTimeoutSeconds;
+	time_t lastReadTaskTime;		 // start time of the read-iu-status task
+	time_t lastReadRequestTime; // start time of the read-iu-status request in one read task
+	ReadTaskState readingState;
+	uint8_t readingUnitIndex; // the current polling unit index [0..connectedUnitCount]
+
+
+	// writing IU commands
+	InternalUnitCommand writeCommands[64];
+	uint8_t	writeCommandCount;
+	uint8_t writingCommandIndex;
+
+
+	uint16_t writeIntervalSeconds;
+	uint16_t writeWaitTimeoutSeconds;
+	time_t lastWriteTaskTime;		 		// start time of the write-iu-status task
+	time_t lastWriteRequestTime; 			// start time of the write-iu-status request in one read task
+	WriteTaskState writingState;
 
 	// modbus communication
 	//ModbusRequest *currentRequest;
@@ -123,23 +168,32 @@ IRACC iracc;
 #define DEFAULT_POLLING_WAITTIMEOUT 1
 
 static void _iracc_task_initialize();
-static void _iracc_task_polling_iu_status();
+static void _iracc_task_read_iu_status();
+static void _iracc_task_write_iu_commands();
+
+
 static int _handle_gateway_status_response(ModbusResponse *resp);
 static int _handle_internal_unit_connection_response(ModbusResponse *resp);
 static InternalUnitStatus* _handle_internal_unit_status_response(uint8_t unitId, ModbusResponse *resp);
+
+static int _iracc_write_internal_unit_command(InternalUnitCommand *cmd);
+static void _handle_internal_unit_command_response(InternalUnitCommand *cmd, ModbusResponse *resp);
 
 int iracc_init(const char* devname, int32_t baudrate, DeviceCallback callback){
 	// init context
 	bzero(&iracc,sizeof(IRACC));
 
 	// setup defaults
-	iracc.pollingIntervalSeconds = DEFAULT_POLLING_INTERVAL;
-	iracc.pollingWaitTimeoutSeconds = DEFAULT_POLLING_WAITTIMEOUT;
+	iracc.readIntervalSeconds = DEFAULT_POLLING_INTERVAL;
+	iracc.readWaitTimeoutSeconds = DEFAULT_POLLING_WAITTIMEOUT;
+	iracc.writeIntervalSeconds = DEFAULT_POLLING_INTERVAL;
+	iracc.writeWaitTimeoutSeconds = DEFAULT_POLLING_WAITTIMEOUT;
 
 	// copy the parameters
 	strncpy(iracc.devname,devname,31);
 	iracc.baudrate = baudrate;
 	iracc.callback = callback;
+
 	// open device
 	_iracc_open();
 
@@ -171,7 +225,10 @@ int iracc_run(){
 		break;
 	case device_state_ready:
 		// polling the IU status
-		_iracc_task_polling_iu_status();
+		_iracc_task_read_iu_status();
+
+		// polling the input command
+		_iracc_task_write_iu_commands();
 		break;
 	default:
 		break;
@@ -181,6 +238,10 @@ int iracc_run(){
 	modbus_run();
 
 	return 0;
+}
+
+int iracc_get_status(char* buf, size_t len){
+	return _iracc_print_status(buf,len);
 }
 
 static void _modbus_receive_error(){
@@ -218,16 +279,20 @@ static void _modbus_received(ModbusRequest *req, ModbusResponse *resp){
 			return;
 		}
 
-		if(req->reg >= IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START){
+		if(req->code == MODBUS_CODE_READ && req->reg >= IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START && req->reg <= IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_END){
 			// handle the internal unit status
 			uint8_t unitid = UNIT_ID(req->reg);
 			InternalUnitStatus *s = _handle_internal_unit_status_response(unitid, resp);
 			if(s){
 				// NOTE - store the received unit status
 				memcpy(iracc.connectedUnitStatus + unitid,s,sizeof(InternalUnitStatus));
-				DBG("unit %d - mode: %d, power: %d, wind: %d, i_temp: %.1f, p_temp: %.1f",s->unitId, s->workingMode, s->powerOn, s->windLevel,s->interiorTemerature,s->presetTemperature);
+				DBG("unit=%d, mode=%d, power=%d, wind=%d, i_temp=%.1f, p_temp=%.1f",s->unitId, s->workingMode, s->powerOn, s->windLevel,s->interiorTemerature,s->presetTemperature);
 				free(s);
 			}
+		}else if((req->code == MODBUS_CODE_PRESET || req->code == MODBUS_CODE_PRESET_MULTI ) && req->reg >= IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START && req->reg <= IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_END){
+			// preset single register for one unit
+			INFO("command response 0x%02x 0x%02x 0x%02x",resp->addr,resp->code,resp->payload.dataLen);
+			_handle_internal_unit_command_response(IRACC_CURRENT_COMMAND(),resp);
 		}else{
 			INFO("Unknown response 0x%02x 0x%02x 0x%02x",resp->addr,resp->code,resp->payload.dataLen);
 		}
@@ -248,7 +313,7 @@ static void _iracc_task_initialize(){
 	case init_check_status:
 		// send gateway status check request
 		DBG("checking gateway status");
-		if(iracc_read_gateway_status() == 0){
+		if(iracc_read_gateway_status() == IRACC_OP_SUCCESS){
 			iracc.initState = init_check_status_wait;
 		}else{
 			iracc.initState = init_failure;
@@ -260,7 +325,7 @@ static void _iracc_task_initialize(){
 	case init_check_connection:
 		// send request for check gateway status
 		DBG("checking IU connections");
-		if(iracc_read_internal_unit_connection() == 0){
+		if(iracc_read_internal_unit_connection() == IRACC_OP_SUCCESS){
 			iracc.initState = init_check_connection_wait;
 		}else{
 			iracc.initState = init_failure;
@@ -283,67 +348,165 @@ static void _iracc_task_initialize(){
 	}
 }
 
+/*
+ * parse received command line-by-line and store in iracc context
+ */
+static int _iracc_parse_command_string(char* buf, size_t len){
+	return -1;
+}
+
+static void _iracc_task_write_iu_commands(){
+	if(iracc.connectedUnitCount == 0 || iracc.state != device_state_ready){
+		// not ready
+		return;
+	}
+	if(!IRACC_READ_IU_IDLE()){
+		// busy reading, do nothing.
+		return;
+	}
+	if(IRACC_WRITE_IU_IDLE()/*iracc.writingState == write_state_init && iracc.writingCommandIndex == 0*/){
+		if(time(NULL) - iracc.lastWriteTaskTime < iracc.writeIntervalSeconds){
+			return;
+		}
+
+		// check shared memory for received commands
+		char buf[512];
+		size_t len = sizeof(buf);
+		databus_get((uint8_t*)buf,&len);
+		if(len == 0)
+			return;
+		// parse the received command string "f1=v1,f2=v2" and assemble to the iracc command
+		if(_iracc_parse_command_string(buf,len) != IRACC_OP_SUCCESS){
+			INFO("parse write command failed");
+			return;
+		}
+		DBG("write task started");
+	}
+
+	switch(iracc.writingState){
+	case write_state_init:
+		if(iracc.writingCommandIndex > 0 &&  iracc.writingCommandIndex >= iracc.writeCommandCount){
+			// all commands are proceed, we're done.
+			iracc.writingState = write_state_complete;
+			break;
+		}
+		InternalUnitCommand *cmd = IRACC_CURRENT_COMMAND();
+		uint8_t _currentUnitId = (cmd->unitId);
+		DBG("writing command[%d] for unit[%d]",iracc.writingCommandIndex, _currentUnitId);
+		iracc.lastWriteRequestTime = time(NULL);
+		if(_iracc_write_internal_unit_command(cmd) == IRACC_OP_SUCCESS){
+			iracc.writingState = write_state_start;
+		}else{
+			WARN("Error write command[%d] for unit[%d]",iracc.writingCommandIndex, _currentUnitId);
+			iracc.writingCommandIndex++; // move to the next command
+		}
+		break;
+
+	case write_state_start:{
+		if(iracc.writingCommandIndex > 0 &&  iracc.writingCommandIndex >= iracc.writeCommandCount){
+			iracc.writingState = write_state_complete;
+			break;
+		}
+		InternalUnitCommand *cmd = IRACC_CURRENT_COMMAND(); 		// assert cmd is not NULL
+		// check if response received or timeout
+		if(cmd->responseReceived){
+			// the status slot[pollingUnitIndex] is filled, which means we did receive the unit status.
+			DBG("write command[%d] on unit[%d] success",iracc.writingCommandIndex,cmd->unitId);
+			iracc.writingCommandIndex++; // move to the next
+			iracc.writingState = write_state_init;
+		}else if(time(NULL) - iracc.lastWriteRequestTime > iracc.writeWaitTimeoutSeconds){
+			// write timeout, move to the next one
+			WARN("write command[%d] on unit[%d] timeout",iracc.writingCommandIndex,cmd->unitId);
+			iracc.writingCommandIndex++;
+			iracc.writingState = write_state_init;
+		}
+	}
+
+		break;
+	case write_state_complete:
+		// save status into the shared memory
+		DBG("write task completed. Total %d unit command written",iracc.writingCommandIndex);
+		iracc.writingCommandIndex = 0;
+		iracc.writeCommandCount = 0;
+		iracc.writingState = write_state_init;
+		iracc.lastWriteTaskTime = time(NULL); // reset task timestamp
+		break;
+	default:
+		break;
+	}
+
+
+	// returns the list of parsed requests.
+	// while(has_more_commands()){
+	//  iracc_send_command(cmd++);
+	// }
+}
+
 /**
  *	polling the IU status by sending the read_registry command one by one
  */
-static void _iracc_task_polling_iu_status(){
+static void _iracc_task_read_iu_status(){
 	if(iracc.connectedUnitCount == 0 || iracc.state != device_state_ready){
 		return;
 	}
-
+	if(!IRACC_WRITE_IU_IDLE()){
+		// busy writing, do nothing
+		return;
+	}
 	// pause a while between the polling task.
-	if(iracc.pollingState == poll_state_init && iracc.pollingUnitIndex == 0){
-		if(time(NULL) - iracc.last_polling_task_time < iracc.pollingIntervalSeconds){
+	if(IRACC_READ_IU_IDLE()/*iracc.pollingState == poll_state_init && iracc.pollingUnitIndex == 0*/){
+		if(time(NULL) - iracc.lastReadTaskTime < iracc.readIntervalSeconds){
 			return;
 		}
-		DBG("polling task started");
+		DBG("read task started");
 	}
 
-	uint8_t unitId = iracc.connectedUnitIDs[iracc.pollingUnitIndex];
-
-	switch(iracc.pollingState){
-	case poll_state_init:
-		if(iracc.pollingUnitIndex >= iracc.connectedUnitCount){
-			iracc.pollingState = poll_state_complete;
+	uint8_t _currentUnitId = iracc.connectedUnitIDs[iracc.readingUnitIndex];
+	switch(iracc.readingState){
+	case read_state_init:
+		if(iracc.readingUnitIndex >= iracc.connectedUnitCount){
+			iracc.readingState = read_state_complete;
 			break;
 		}
 
-		DBG("polling unit[%d]",unitId);
-		iracc.last_polling_query_time = time(NULL);
-		if(iracc_read_internal_unit_status(unitId) == 0){
-			iracc.pollingState = poll_state_start;
+		DBG("reading unit[%d]",_currentUnitId);
+		iracc.lastReadRequestTime = time(NULL);
+		if(iracc_read_internal_unit_status(_currentUnitId) == IRACC_OP_SUCCESS){
+			iracc.readingState = read_state_start;
 		}else{
-			WARN("Error query status for unit id %d",iracc.pollingUnitIndex);
-			iracc.pollingUnitIndex++; // move to the next
+			WARN("Error query status for unit id %d",iracc.readingUnitIndex);
+			iracc.readingUnitIndex++; // move to the next
 		}
 		break;
-	case poll_state_start:{
-		if(iracc.pollingUnitIndex >= iracc.connectedUnitCount){
-			iracc.pollingState = poll_state_complete;
+	case read_state_start:{
+		if(iracc.readingUnitIndex >= iracc.connectedUnitCount){
+			iracc.readingState = read_state_complete;
 			break;
 		}
 
-		InternalUnitStatus *status = &(iracc.connectedUnitStatus[iracc.pollingUnitIndex]);
-		if(status->unitId == unitId){
+		InternalUnitStatus *status = &(iracc.connectedUnitStatus[iracc.readingUnitIndex]);
+		// check if data received or timeout
+		if(status->unitId == _currentUnitId /*data received if unitId equals current unit idotherwise will be -1 */){
 			// the status slot[pollingUnitIndex] is filled, which means we did receive the unit status.
-			DBG("polled unit[%d] status success",status->unitId);
-			iracc.pollingUnitIndex++; // move to the next - FIXME - what if read timeout?
-			iracc.pollingState = poll_state_init;
-		}else if(time(NULL) - iracc.last_polling_query_time > iracc.pollingWaitTimeoutSeconds){
+			DBG("read unit[%d] status success",status->unitId);
+			iracc.readingUnitIndex++; // move to the next - FIXME - what if read timeout?
+			iracc.readingState = read_state_init;
+		}else if(time(NULL) - iracc.lastReadRequestTime > iracc.readWaitTimeoutSeconds){
 			// polling timeout, move to the next one
-			WARN("polling unit[%d] status timeout",status->unitId);
-			iracc.pollingUnitIndex++;
-			iracc.pollingState = poll_state_init;
+			WARN("read unit[%d] status timeout",status->unitId);
+			iracc.readingUnitIndex++;
+			iracc.readingState = read_state_init;
 		}
 	}
 		break;
-	case poll_state_complete:
+	case read_state_complete:
 		// save status into the shared memory
-		DBG("polling task completed. Total %d unit status polled",iracc.pollingUnitIndex);
-		//TODO - dump to the shared memory
-		iracc.pollingUnitIndex = 0;
-		iracc.pollingState = poll_state_init;
-		iracc.last_polling_task_time = time(NULL);
+		DBG("read task completed. Total %d unit status polled",iracc.readingUnitIndex);
+		//update the data in shared memory
+		_iracc_update_shared_data();
+		iracc.readingUnitIndex = 0;
+		iracc.readingState = read_state_init;
+		iracc.lastReadTaskTime = time(NULL);
 		break;
 	default:
 		break;
@@ -372,13 +535,31 @@ static int _iracc_close(){
 
 	modbus_close();
 
-	iracc.pollingState = poll_state_init;
+	iracc.readingState = read_state_init;
 	iracc.state = device_state_close;
 	iracc.initState = init_check_status;
 	iracc.errcount = 0;
 	iracc.rxcount = 0;
 	INFO("IRACC port closed.");
 	return 0;
+}
+
+static void _iracc_update_shared_data(){
+	uint8_t buf[1024];
+	int len = _iracc_print_status((char*)buf,sizeof(buf));
+	databus_put(buf,len);
+}
+
+#define STATUS_TEMPLATE_STRING "unit=%d, mode=%d, power=%d, wind=%d, i_temp=%.1f, p_temp=%.1f\n"
+static inline int _iracc_print_status(char* buf, size_t bufLen){
+	//FIXME - check the buf len to avoid buffer overflow.
+	int len = 0;
+	for(int i = 0;i<iracc.connectedUnitCount;i++){
+		uint8_t id = iracc.connectedUnitIDs[i];
+		InternalUnitStatus *s = &iracc.connectedUnitStatus[id];
+		len += sprintf((char*)(buf + len),STATUS_TEMPLATE_STRING,s->unitId, s->workingMode, s->powerOn, s->windLevel,s->interiorTemerature,s->presetTemperature);
+	}
+	return len;
 }
 
 /////////////////////////////////////////////////////////////////////
@@ -391,7 +572,7 @@ static int _iracc_close(){
  * << 01 04 02 00 01 78 F0
  */
 int iracc_read_gateway_status(){
-	ModbusRequest *req = modbus_alloc_request(0x04/*read*/,REG_GW_STATUS/*the status*/);
+	ModbusRequest *req = modbus_alloc_request(MODBUS_CODE_READ/*0x04*/,REG_GW_STATUS/*the status*/);
 	if(!req){
 		return -1;
 	}
@@ -431,13 +612,16 @@ failure:
 	return -1;
 }
 
+
 /**
  * Get the count of connected internal units
  */
 int iracc_read_internal_unit_connection(){
-	ModbusRequest *req = modbus_alloc_request(0x04/*read*/,REG_IU_CONNECTION/*the internal unit connection status*/);
+	ModbusRequest *req = modbus_alloc_request(MODBUS_CODE_READ/*0x04*/,REG_IU_CONNECTION/*the internal unit connection status*/);
 	if(!req) return -1;
-	req->regCount = 0x04; // query for 4 regs, in 8 bytes
+	req->regValue[0] = 0x00;
+	req->regValue[1] = 0x04; // query for 4 regs, in 8 bytes
+	req->regValueCount = 2;
 	if(modbus_enqueue_request(req) == -1){
 		ERROR("queued request is full, operation aborted:[read_gateway_status]");
 		free(req);
@@ -504,15 +688,19 @@ failure:
 /*
  * query internal unit status
  * @pram IUID the internal unit id that in range [0 ... 63]
+ *
+ * @returns 0 for sucess or -1 for error
  */
 int iracc_read_internal_unit_status(uint8_t IUID){
 	if(IUID >= 64 /*max 64 internal units supported*/){
 		return -1;
 	}
 	uint16_t regAddr = IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START + (IUID * IRACC_INTERNAL_UNIT_STATUS_REG_COUNT);
-	ModbusRequest *req = modbus_alloc_request(0x04/*read*/,regAddr/*the internal unit status registry*/);
+	ModbusRequest *req = modbus_alloc_request(MODBUS_CODE_READ/*0x04*/,regAddr/*the internal unit status registry*/);
 	if(!req) return -1;
-	req->regCount = IRACC_INTERNAL_UNIT_STATUS_REG_COUNT/*0x06*/; // query for 6 regs, in 12 bytes
+	req->regValue[0] = 0x00;
+	req->regValue[1] = IRACC_INTERNAL_UNIT_STATUS_REG_COUNT/*0x06*/; // query for 6 regs, in 12 bytes
+	req->regValueCount = 2;
 	if(modbus_enqueue_request(req) == -1){
 		ERROR("queued request is full, operation aborted:[iracc_read_internal_unit_status]");
 		return -1;
@@ -570,6 +758,88 @@ static InternalUnitStatus* _handle_internal_unit_status_response(uint8_t unitId,
 	*/
 }
 
+
+/*
+ * FIXME  - implement the write routine
+ */
+static int _iracc_write_internal_unit_command(InternalUnitCommand *cmd){
+	if(!cmd)
+		return -1;
+
+	ModbusRequest *req = NULL;
+	uint16_t regAddr = IRACC_INTERNAL_UNIT_PRESET_REG_ADDR_START + (cmd->unitId * IRACC_INTERNAL_UNIT_PRESET_REG_COUNT);
+	req = modbus_alloc_request(/*presetValueCount > 1?MODBUS_CODE_PRESET_MULTI:*/MODBUS_CODE_PRESET/*0x10 or 0x06*/,regAddr/*the internal unit status registry*/);
+	if(!req) return -1;
+
+	int presetValueCount = 0;
+	if(cmd->windLevel > 0){
+		req->regValue[0] = cmd->windLevel; // wind level should be 10,20,30,40,50
+		req->regValue[1] = 0xFF;
+		req->regValueCount = 2;
+		presetValueCount++;
+	}
+
+	if(cmd->powerOn ==0){
+		req->regValue[1] = 0x60; // power off
+		if(presetValueCount == 0){
+			req->regValue[0] = 0xFF; // no wind
+		}
+		req->regValueCount = 2;
+		presetValueCount++;
+	}else if(cmd->powerOn ==1){
+		req->regValue[1] = 0x61; // power on
+		if(presetValueCount == 0){
+			req->regValue[0] = 0xFF; // no wind
+		}
+		req->regValueCount = 2;
+		presetValueCount++;
+	}
+
+	if(cmd->workingMode > 0){
+		if(presetValueCount == 0){
+			req->regValue[0] = 0x00;
+			req->regValue[1] = cmd->workingMode; // 00通风|01制热|02制冷|03自动|07除湿|
+			req->regValueCount = 2;
+		}else{
+			//regValue[2] = 0x00;
+			//regValue[3] = cmd->workingMode;
+			WARN("multi-command is not supprted yet!");
+		}
+		presetValueCount++;
+	}
+
+	if(cmd->presetTemperature > 0){
+		uint16_t temp = (cmd->presetTemperature * 10);
+		if(presetValueCount == 0){
+			req->regValue[0] = temp >> 8; 	// high part
+			req->regValue[1] = temp & 0xff; 	// low part
+			req->regValueCount = 2;
+		}else{
+			//regValue[4] = temp >> 8;
+			//regValue[5] = temp & 0xff;
+			WARN("multi-command is not supprted yet!");
+		}
+		presetValueCount++;
+	}
+
+	if(modbus_enqueue_request(req) != IRACC_OP_SUCCESS){
+		ERROR("queued request is full, operation aborted:[_iracc_write_internal_unit_command]");
+		return -1;
+	}
+	DBG("enqueue request 0x%02x 0x%02x 0x%04x",req->addr, req->code,req->reg);
+	return 0;
+}
+
+static void _handle_internal_unit_command_response(InternalUnitCommand *cmd, ModbusResponse *resp){
+	if(!cmd) return;
+	uint16_t reg = resp->ack.regAddr[0] << 8 | resp->ack.regAddr[1];
+	uint8_t unitId = WRITE_UNIT_ID(reg);
+	if(cmd->unitId == unitId){
+		cmd->responseReceived = true;
+	}else{
+		INFO("unit id mismatch in command response. expected %d, got %d in response",cmd->unitId,unitId);
+	}
+}
 
 void iracc_test(){
 	//uint16_t i = 0x0102;

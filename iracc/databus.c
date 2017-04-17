@@ -29,8 +29,12 @@ typedef struct{
 	int shmId;
 	void * shmAddr;
 	size_t shmSize;
-
 	int semId;
+
+	void* memOut;
+	size_t memOutSize;
+	void* memIn;
+	size_t memInSize;
 
 	bool master;
 }DatabusCtx;
@@ -54,13 +58,12 @@ int databus_init(const char* sharedFilePath,bool masterFlag){
 		WARN("*** error creating shm file(%s), %s.",sharedFilePath,strerror(errno));
 		return -1;
 	}
-	key_t shmkey = ftok(sharedFilePath,1);
+	key_t shmkey = ftok(sharedFilePath,2);
 	if(shmkey < 0){
 		// something wrong
 		WARN("error: ftok() %s",strerror(errno));
 		return -1;
 	}
-
 	// allocate the shared memory
 	size_t shmsize = SHARED_MEM_SIZE;
 	int shmflag = 0666;
@@ -81,6 +84,15 @@ int databus_init(const char* sharedFilePath,bool masterFlag){
 	databus.shmAddr = shmaddr;
 	databus.shmSize = shmsize;
 	DBG("shm id(%d), addr(0x%lx), size(%d)",shmid,shmaddr,(int)shmsize);
+
+	//|0 - 4095|4096 - 8192|
+	//|read    |write      |
+	databus.memOut = shmaddr;
+	databus.memOutSize = shmsize / 2;
+	databus.memIn = shmaddr + (shmsize / 2);
+	databus.memInSize = shmsize / 2;
+	DBG("read  addr(0x%lx), size(%d)",databus.memOut,(int)databus.memOutSize);
+	DBG("write addr(0x%lx), size(%d)",databus.memIn,(int)databus.memInSize);
 
 	// setup semaphore
 	int semflag = 0666;
@@ -112,6 +124,8 @@ int databus_shutdown(){
 		// release shared memory
 		shmdt(databus.shmAddr);
 		databus.shmAddr = 0;
+		databus.memIn = 0;
+		databus.memOut = 0;
 	}
 	if(_databus_shm_isowner()/*databus.master && databus.shmId*/){
 		DBG("release shared memory %d",databus.shmId);
@@ -131,8 +145,8 @@ int databus_put(uint8_t* data, size_t len){
 		return 0;
 	}
 	_databus_lock();
-	size_t size = MIN(len,databus.shmSize);
-	memcpy(databus.shmAddr,data,size);
+	size_t size = MIN(len,databus.memInSize);
+	memcpy(databus.memIn,data,size);
 	_databus_unlock();
 	return size;
 }
@@ -143,8 +157,8 @@ int databus_get(uint8_t* data, size_t *len){
 		return 0;
 	}
 	_databus_lock();
-	size_t size = MIN((*len),databus.shmSize);
-	memcpy(data,databus.shmAddr,size);
+	size_t size = MIN((*len),databus.memOutSize);
+	memcpy(data,databus.memOut,size);
 	*len = size;
 	_databus_unlock();
 	return size;
@@ -181,7 +195,7 @@ static void _databus_unlock(){
 	_databus_sem_op(1);  // increase to 1 to unlock
 }
 
-#define DATABUS_TEST 1
+#define DATABUS_TEST 0
 #if DATABUS_TEST
 
 static time_t t = 0;

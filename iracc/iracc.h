@@ -38,6 +38,8 @@ int iracc_read_gateway_status();
 int iracc_read_internal_unit_connection();
 int iracc_read_internal_unit_status(uint8_t IUID);
 
+int iracc_get_status(char* buf, size_t len);
+
 void iracc_test();
 
 #endif /* IRACC_H_ */

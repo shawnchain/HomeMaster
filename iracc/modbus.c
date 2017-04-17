@@ -103,7 +103,9 @@ ModbusRequest* modbus_alloc_request(uint8_t code, uint16_t reg) {
 	req->addr = modbus.ctx.slaveAddress;
 	req->code = code;
 	req->reg = reg;
-	req->regCount = 0x0001;
+	req->regValue[0] = 0;
+	req->regValue[1] = 1;
+	req->regValueCount = 2;
 	return req;
 }
 
@@ -157,8 +159,11 @@ static bool modbus_send(ModbusRequest *request, int fd, void* callback) {
 	buf[i++] = request->code;
 	buf[i++] = HI_BYTE(request->reg);
 	buf[i++] = LO_BYTE(request->reg);
-	buf[i++] = HI_BYTE(request->regCount);
-	buf[i++] = LO_BYTE(request->regCount);
+	if(request->regValueCount > 0){
+		uint8_t bytesToCopy = MIN(request->regValueCount,128);
+		memcpy((buf + i),request->regValue,bytesToCopy);
+		i+= bytesToCopy;
+	}
 	uint16_t crc = crc16_modbus(buf, i);
 	crc = htons(crc); //convert to network order a.k.a. BIG_ENDIAN order
 	//crc = TO_BIG_ENDIAN_U16(crc);
