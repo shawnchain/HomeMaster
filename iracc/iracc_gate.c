@@ -38,6 +38,7 @@ static struct option long_opts[] = {
 	{ "device", required_argument, 0, 'D', },
 	{ "log", required_argument, 0, 'l', },
 	{ "daemon", no_argument, 0, 'd', },
+	{ "verbose", no_argument, 0, 'V', },
 	{ "help", no_argument, 0, 'h', },
 	{ 0, 0, 0, 0, },
 };
@@ -58,8 +59,8 @@ AppConfig appConfig = {
 
 int iracc_gate_main(int argc, char* argv[]){
 	int opt;
-
-	while ((opt = getopt_long(argc, argv, "S:D:B:l:dh",
+	bool verboseLog = false;
+	while ((opt = getopt_long(argc, argv, "S:D:B:l:dVh",
 				long_opts, NULL)) != -1) {
 		switch (opt){
 		case 'S': // service
@@ -78,6 +79,9 @@ int iracc_gate_main(int argc, char* argv[]){
 			break;
 		case 'd':
 			appConfig.in_background = true;
+			break;
+		case 'V':
+			verboseLog = true;
 			break;
 		case 'h':
 			print_help(argc,argv);
@@ -104,7 +108,7 @@ int iracc_gate_main(int argc, char* argv[]){
 
 	int rc;
 
-	if((rc = log_init(appConfig.log_file,DEFAULT_LOG_LEVEL)) < 0){
+	if((rc = log_init(appConfig.log_file,verboseLog?DEBUG_LEVEL:DEFAULT_LOG_LEVEL)) < 0){
 		printf("*** warning: log system initialize failed");
 	}
 	if((rc = io_init()) < 0){
@@ -147,6 +151,7 @@ static void print_help(int argc, char *argv[]){
 	printf("  -B, --baudrate                      specify baudrate for IRACC device \n"); /*-B 115200*/
 	printf("  -l, --log                           log file name\n");
 	printf("  -d, --daemon                        run as daemon process\n");
+	printf("  -V, --verbose                       verbose log \n");
 	printf("  -h, --help                          print this help\n");
 }
 

@@ -78,4 +78,9 @@ static inline size_t bytes_available(int fd){
 
 time_t get_time_milli_seconds();
 
+/*
+ * trim string by modifying it
+ */
+char* trim_str(char* str);
+
 #endif /* SRC_UTILS_H_ */

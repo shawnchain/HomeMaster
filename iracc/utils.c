@@ -26,6 +26,8 @@
 #include <sys/types.h>
 #include <netdb.h>
 
+#include <ctype.h>
+
 #include "utils.h"
 
 int resolve_host(const char *hostname_port_pair /*rotate.aprs2.net:14580*/,
@@ -102,6 +104,24 @@ time_t get_time_milli_seconds() {
 	gettimeofday(&tv, NULL);
 	time_t time_in_mill = (tv.tv_sec) * 1000 + (tv.tv_usec) / 1000;
 	return time_in_mill;
+}
+
+char* trim_str(char* str){
+	char *end;
+	// Trim leading space
+	while(isspace((unsigned char)*str)) str++;
+
+	if(*str == 0)  // All spaces?
+	return str;
+
+	// Trim trailing space
+	end = str + strlen(str) - 1;
+	while(end > str && isspace((unsigned char)*end)) end--;
+
+	// Write new null terminator
+	*(end+1) = 0;
+
+	return str;
 }
 
 //void hexdump(void *d, size_t len) {

@@ -43,7 +43,7 @@ typedef struct{
 
 static DatabusCtx databus;
 
-static bool _databus_shm_isowner();
+static bool _databus_shm_should_release();
 static void _databus_lock();
 static void _databus_unlock();
 
@@ -127,11 +127,13 @@ int databus_shutdown(){
 		databus.memIn = 0;
 		databus.memOut = 0;
 	}
-	if(_databus_shm_isowner()/*databus.master && databus.shmId*/){
+	// release shared memory
+	if(_databus_shm_should_release()/*databus.master && databus.shmId*/){
 		DBG("release shared memory %d",databus.shmId);
 		shmctl(databus.shmId,IPC_RMID,0);
 		databus.shmId = 0;
 	}
+	// release semaphore
 	if(databus.master && databus.semId){
 		semctl(databus.semId,0,IPC_RMID);
 		databus.semId = 0;
@@ -140,7 +142,7 @@ int databus_shutdown(){
 	return 0;
 }
 
-int databus_put(uint8_t* data, size_t len){
+int databus_put_in(uint8_t* data, size_t len){
 	if(!databus.shmAddr){
 		return 0;
 	}
@@ -151,28 +153,81 @@ int databus_put(uint8_t* data, size_t len){
 	return size;
 }
 
-int databus_get(uint8_t* data, size_t *len){
-	if(!databus.shmAddr){
+int databus_get_in(uint8_t* data, size_t *len, uint8_t mode){
+	if (!databus.shmAddr) {
 		*len = 0;
 		return 0;
 	}
 	_databus_lock();
-	size_t size = MIN((*len),databus.memOutSize);
-	memcpy(data,databus.memOut,size);
-	*len = size;
+	size_t size = MIN((*len), databus.memInSize);
+	if (mode & DATABUS_ACCESS_MODE_STRING) {
+		strncpy((char* )data, databus.memIn, size);
+		*len = strlen((char*) data);
+	} else {
+		memcpy(data, databus.memIn, size);
+		*len = size;
+	}
+
+	if((*len > 0) && (mode & DATABUS_ACCESS_MODE_POP)){
+		uint8_t zero = 0;
+		memcpy(databus.memIn,&zero,1);
+		//DBG("clear databus.memIn");
+	}
+	_databus_unlock();
+	return *len;
+}
+
+int databus_put_out(uint8_t* data, size_t len){
+	if(!databus.shmAddr){
+		return 0;
+	}
+	_databus_lock();
+	size_t size = MIN(len,databus.memOutSize);
+	memcpy(databus.memOut,data,size);
 	_databus_unlock();
 	return size;
 }
 
-static bool _databus_shm_isowner(){
-	if(!databus.shmId) return false;
+int databus_get_out(uint8_t* data, size_t *len, uint8_t mode){
+	if (!databus.shmAddr) {
+		*len = 0;
+		return 0;
+	}
+	_databus_lock();
+	size_t size = MIN((*len), databus.memOutSize);
+	if (mode & DATABUS_ACCESS_MODE_STRING) {
+		strncpy((char* )data, databus.memOut, size);
+		*len = strlen((char*) data);
+	} else {
+		memcpy(data, databus.memOut, size);
+		*len = size;
+	}
 
+	if((*len > 0) && (mode & DATABUS_ACCESS_MODE_POP)){
+		uint8_t zero = 0;
+		memcpy(databus.memOut,&zero,1);
+//		if(mode & DATABUS_ACCESS_MODE_STRING){
+//
+//		}else{
+//
+//		}
+	}
+	_databus_unlock();
+	return *len;
+}
+
+static bool _databus_shm_should_release(){
+	if(!databus.shmId) return false;
+#if 1
+	return databus.master;
+#else
 	struct shmid_ds buf;
 	memset(&buf,0,sizeof(struct shmid_ds));
 	if(0 == shmctl(databus.shmId,IPC_STAT,&buf)){
 		return buf.shm_cpid == getpid();
 	}
 	return false;
+#endif
 }
 
 static inline void _databus_sem_op(int val){

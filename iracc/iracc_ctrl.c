@@ -92,7 +92,7 @@ int iracc_ctrl_main(int argc, char* argv[]){
 	if(op == DataOp_Write){
 		// send command to the databus
 		INFO("Writing databus...");
-		if(databus_put(buf,strlen((char*)buf)) > 0){
+		if(databus_put_in(buf,strlen((char*)buf) + 1 /*include the '\0'*/) > 0){
 			// write success
 			//printf("OK\n");
 		}else{
@@ -103,14 +103,12 @@ int iracc_ctrl_main(int argc, char* argv[]){
 
 	INFO("Reading databus...");
 	// read data from databus
-	if(databus_get(buf,&bufSize) > 0){
-		if(strlen((const char*)buf) > 0){
-			printf("%.*s\n",128,buf);
-		}else{
-			printf("no data\n");
-		}
+	size_t outlen = bufSize;
+	databus_get_out(buf,&outlen,DATABUS_ACCESS_MODE_STRING);
+	if(outlen > 0){
+		printf("%.*s\n",128,buf);
 	}else{
-		printf("databus is not ready\n");
+		printf("no data\n");
 	}
 
 #define IRACC_CTRL_TEST 0
@@ -125,7 +123,7 @@ int iracc_ctrl_main(int argc, char* argv[]){
 		t = time(NULL);
 
 		// slave or first time run
-		if(!databus_get(&i,&s)){
+		if(!databus_get_out(&i,&s,DATABUS_ACCESS_MODE_STRING)){
 			break;
 		}
 		// slave part

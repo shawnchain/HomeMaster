@@ -68,6 +68,7 @@ void modbus_run() {
 			break;
 		ModbusRequest *req = (ModbusRequest*) fifo_pop(&modbus.fifo);
 		if(!req) break;
+		DBG("dequeued request 0x%02x 0x%02x 0x%04x",req->addr, req->code,req->reg);
 		modbus_send(req, modbus.reader.fd, NULL);
 		modbus.lastRequest = req;
 		modbus.lastRequestSendTime = time(NULL);
@@ -240,7 +241,7 @@ static void _reader_callback(uint8_t* data, size_t len) {
 		if (!resp) {
 			return;
 		}
-
+		//DBG("received modbus response 0x%02, 0x%02x",resp->addr,resp->code);
 		if(req->addr == resp->addr && req->code == resp->code){
 			if (modbus.receiveCallback) {
 				modbus.receiveCallback(req, resp);
