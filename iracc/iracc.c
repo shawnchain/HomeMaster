@@ -33,15 +33,7 @@
 #include "utils.h"
 #include "databus.h"
 
-static int _iracc_open();
-static int _iracc_close();
-static void _iracc_update_shared_data();
-static int _iracc_print_status(char* buf, size_t bufLen);
-
-static void _modbus_received(ModbusRequest *req, ModbusResponse *resp);
-
-#define IRACC_OP_SUCCESS 0
-#define IRACC_OP_FAILURE -1
+#include "iracc_cmd.h"
 
 typedef enum{
 	device_state_close = 0,
@@ -52,7 +44,6 @@ typedef enum{
 	device_state_ready,
 	//state_closing, // mark for closing
 }DeviceState;
-
 
 typedef enum{
 	init_check_status = 0,
@@ -77,46 +68,6 @@ typedef enum{
 	write_state_start,
 	write_state_complete,
 }WriteTaskState;
-
-#define MAX_IO_ERROR_COUNT 10
-#define IRACC_DEFAULT_ADDRESS 0x01
-
-#define IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START 0x07D0
-#define IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_END 0x0950
-#define IRACC_INTERNAL_UNIT_STATUS_REG_COUNT 6
-#define UNIT_ID(reg) ((reg - IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START) / 6)
-
-
-#define IRACC_INTERNAL_UNIT_PRESET_REG_ADDR_START 0x07D0
-#define IRACC_INTERNAL_UNIT_PRESET_REG_ADDR_END 0x088D
-#define IRACC_INTERNAL_UNIT_PRESET_REG_COUNT 3
-#define WRITE_UNIT_ID(reg) ((reg - IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START) / 3)
-
-#define IRACC_READ_IU_IDLE() (iracc.readingState == read_state_init && iracc.readingUnitIndex == 0)
-#define IRACC_WRITE_IU_IDLE() (iracc.writingState == write_state_init && iracc.writingCommandIndex == 0)
-#define IRACC_CURRENT_COMMAND() ((iracc.writeCommandCount > 0)?(&iracc.writeCommands[iracc.writingCommandIndex]):NULL)
-
-typedef struct{
-	uint8_t unitId;
-	uint8_t windLevel;
-	uint8_t powerOn;
-	uint8_t filterCleanupFlag;
-	uint8_t workingMode;
-	float presetTemperature;
-	uint16_t errorCode;
-	float interiorTemerature;
-	uint8_t temperatureSensorOK;
-}InternalUnitStatus;
-
-typedef struct{
-	//Object object;
-	uint8_t unitId;
-	uint8_t windLevel;  // 0 means not set
-	uint8_t powerOn;		// 0 means not set
-	int8_t workingMode; // -1 means not set
-	float presetTemperature;
-	bool responseReceived;
-}InternalUnitCommand;
 
 typedef struct {
 	// parent IO reader
@@ -161,15 +112,61 @@ typedef struct {
 	//time_t last_request_sent;
 }IRACC;
 
-IRACC iracc;
+////////////////////////////////////////////////////////////////////
+// IRACC MODBUS REGISTERS
+#define REG_GW_STATUS 0x0000 // Gateway Status
+#define REG_IU_CONNECTION 0x0001 // Connection Status
+#define REG_30003  0x0002
+#define REG_30004  0x0003
+#define REG_30005  0x0004
+
+#define REG_IU_STATUS_START 0X07D0 // Internal Unit Status
+#define REG_IU01_STATUS  0x07D0
+#define REG_32001	0x07D0		// IU01 Status
+#define REG_32007	0x07D6		// IU02 Status
+#define REG_32013	0x07DC		// IU03 Status
+
+#define REG_42001	0x07D0
+#define REG_42004	0x07D3
+#define REG_42007	0x07D6
+
+
+////////////////////////////////////////////////////////////////////
+// Internal Macros
+
+#define MAX_IO_ERROR_COUNT 10
+#define IRACC_DEFAULT_ADDRESS 0x01
+
+#define IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START 0x07D0
+#define IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_END 0x0950
+#define IRACC_INTERNAL_UNIT_STATUS_REG_COUNT 6
+#define UNIT_ID(reg) ((reg - IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START) / 6)
+
+
+#define IRACC_INTERNAL_UNIT_PRESET_REG_ADDR_START 0x07D0
+#define IRACC_INTERNAL_UNIT_PRESET_REG_ADDR_END 0x088D
+#define IRACC_INTERNAL_UNIT_PRESET_REG_COUNT 3
+#define WRITE_UNIT_ID(reg) ((reg - IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START) / 3)
+
+#define IRACC_READ_IU_IDLE() (iracc.readingState == read_state_init && iracc.readingUnitIndex == 0)
+#define IRACC_WRITE_IU_IDLE() (iracc.writingState == write_state_init && iracc.writingCommandIndex == 0)
+#define IRACC_CURRENT_COMMAND() ((iracc.writeCommandCount > 0)?(&iracc.writeCommands[iracc.writingCommandIndex]):NULL)
 
 #define DEFAULT_POLLING_INTERVAL 8
 #define DEFAULT_POLLING_WAITTIMEOUT 1
 
+/////////////////////////////////////////////////////////////////////
+// Internal Methods
+
+static int _iracc_open();
+static int _iracc_close();
+static void _iracc_update_shared_data();
+static int _iracc_print_status(char* buf, size_t bufLen);
+
+static void _modbus_received(ModbusRequest *req, ModbusResponse *resp);
 static void _iracc_task_initialize();
 static void _iracc_task_read_iu_status();
 static void _iracc_task_write_iu_commands();
-
 
 static int _handle_gateway_status_response(ModbusResponse *resp);
 static int _handle_internal_unit_connection_response(ModbusResponse *resp);
@@ -177,6 +174,8 @@ static InternalUnitStatus* _handle_internal_unit_status_response(uint8_t unitId,
 
 static int _iracc_write_internal_unit_command(InternalUnitCommand *cmd);
 static void _handle_internal_unit_command_response(InternalUnitCommand *cmd, ModbusResponse *resp);
+
+IRACC iracc;
 
 int iracc_init(const char* devname, int32_t baudrate, DeviceCallback callback){
 	// init context
@@ -242,6 +241,17 @@ int iracc_get_status(char* buf, size_t len){
 	return _iracc_print_status(buf,len);
 }
 
+int iracc_push_command(InternalUnitCommand *cmd){
+	int ret = -1;
+	if(iracc.writeCommandCount < (sizeof(iracc.writeCommands) / sizeof(InternalUnitCommand))){
+		//iracc.writeCommands[iracc.writeCommandCount++] = iuc;
+		memcpy(&iracc.writeCommands[iracc.writeCommandCount],cmd,sizeof(InternalUnitCommand));
+		iracc.writeCommandCount++;
+		ret = 0;
+	}
+	return ret;
+}
+
 static void _modbus_receive_error(){
 	// something wrong, increase the error count;
 	if(++iracc.errcount >= MAX_IO_ERROR_COUNT){
@@ -284,7 +294,7 @@ static void _modbus_received(ModbusRequest *req, ModbusResponse *resp){
 			if(s){
 				// NOTE - store the received unit status
 				memcpy(iracc.connectedUnitStatus + unitid,s,sizeof(InternalUnitStatus));
-				DBG("unit=%d, mode=%d, power=%d, wind=%d, i_temp=%.1f, p_temp=%.1f",s->unitId, s->workingMode, s->powerOn, s->windLevel,s->interiorTemerature,s->presetTemperature);
+				DBG("unit=%x, mode=%x, power=%x, wind=%x, i_temp=%.1f, p_temp=%.1f",s->unitId, s->workMode, s->powerOn, s->windLevel,s->interiorTemerature,s->presetTemperature);
 				free(s);
 			}
 		}else if((req->code == MODBUS_CODE_PRESET || req->code == MODBUS_CODE_PRESET_MULTI ) && req->reg >= IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_START && req->reg <= IRACC_INTERNAL_UNIT_STATUS_REG_ADDR_END){
@@ -300,7 +310,7 @@ static void _modbus_received(ModbusRequest *req, ModbusResponse *resp){
 }
 
 /////////////////////////////////////////////////////////////////////
-#pragma mark - Interanl implementations
+// Interanl implementations
 
 /**
  * Initialize the module states by checking adapter status and the IU connections
@@ -346,194 +356,6 @@ static void _iracc_task_initialize(){
 	}
 }
 
-typedef enum{
-	workModeValueAuto = 0x03,
-	workModeValueCool = 0x02,
-	workModeValueHeat = 0x01,
-	workModeValueDry = 0x07,
-	workModeValueFan = 0x00,
-}WorkModeValue;
-
-typedef enum{
-	windLevelValueLowLow = 0x10,
-	windLevelValueLow = 0x20,
-	windLevelValueMedium = 0x30,
-	windLevelValueHigh = 0x40,
-	windLevelValueHighHigh = 0x50
-}WindLevelValue;
-
-typedef enum{
-	powerModeValueOn = 0x61,
-	powerModeValueOff = 0x60
-}PowerModeValue;
-
-/*
- * parse received command line-by-line and store in iracc context
- * unit=1, mode=2, power=0, wind=5, i_temp=26.6, p_temp=28.1
- *
- *  - mode enum: 1,2,3,4,5|auto,cool,heat,dry,fan --> 03,02,01,07,00
- *  - wind enum: 1,2,3,4,5|ll,l,m,h,hh --> 10,20,30,40,50
- *  - temp: float --> 15.00 ~ 35.00
- *  - power: on,off|0,1 --> 61,60
- */
-static inline int _iracc_parse_command_assign_value(InternalUnitCommand *iuc, char* key, char* value){
-	int ret = 0;
-	if(strcmp(key,"unit") == 0){
-		int i = atoi(value);
-		if(i >=0){
-			iuc->unitId = i;
-		}else{
-			ret = -1;
-		}
-	}else if(strcmp(key,"mode") == 0){
-		if(strcmp(value,"auto") == 0){
-			iuc->workingMode = workModeValueAuto;
-		}else if(strcmp(value,"cool") == 0){
-			iuc->workingMode = workModeValueCool;
-		}else if(strcmp(value,"heat") == 0){
-			iuc->workingMode = workModeValueHeat;
-		}else if(strcmp(value,"dry") == 0){
-			iuc->workingMode = workModeValueDry;
-		}else if(strcmp(value,"fan") == 0){
-			iuc->workingMode = workModeValueFan;
-		}else{
-			ret = -1;
-		}
-	}else if(strcmp(key,"power") == 0){
-		if(strcmp(value,"on") == 0){
-			iuc->powerOn = powerModeValueOn;
-		}else if(strcmp(value,"off") == 0){
-			iuc->powerOn = powerModeValueOff;
-		}else{
-			ret = -1;
-		}
-	}else if(strcmp(key,"wind") == 0){
-		if(strcmp(value,"ll") == 0){
-			iuc->windLevel = windLevelValueLowLow;
-		}else if(strcmp(value,"l") == 0){
-			iuc->windLevel = windLevelValueLow;
-		}else if(strcmp(value,"m") == 0){
-			iuc->windLevel = windLevelValueMedium;
-		}else if(strcmp(value,"h") == 0){
-			iuc->windLevel = windLevelValueHigh;
-		}else if(strcmp(value,"hh") == 0){
-			iuc->windLevel = windLevelValueHighHigh;
-		}else{
-			ret = -1;
-		}
-	}else if(strcmp(key,"temp") == 0){
-		double d = atof(value);
-		ret = -1;
-		if(d > 0){
-			int i = (d * 100.f);
-			if(i >= 1500 && i <= 3500){
-				// valid
-				iuc->presetTemperature = i /100.f;
-				ret = 0;
-			}
-		}
-	}else{
-		// unknown value
-		ret = -1;
-	}
-	return ret;
-}
-
-static inline int _iracc_parse_command_split(char* aline, size_t alineLen){
-
-	DBG("command: %.*s",alineLen,aline);
-	char *kvpair;
-	char* sep1=",",*sep2="=";
-	char  *brk1;
-	int count = 0;
-	int errors = 0;
-	int ret = -1;
-	// split the line by ','
-	InternalUnitCommand *iuc = NULL;
-	for(kvpair = strtok_r(aline,sep1,&brk1);kvpair;kvpair=strtok_r(NULL,sep1,&brk1)){
-		kvpair = trim_str(kvpair);
-		char *key,*value;
-		DBG("param%d: %s",++count,kvpair);
-		// search for the first occurance of '='
-		key = kvpair;
-		char *eq = strstr(kvpair,sep2);
-		if(eq){
-			*eq = 0;
-			value = eq+1;
-		}
-		// the key/value is found
-		if(key && strlen(key) > 0 && value && strlen(value) > 0){
-			if(iuc == NULL){
-				iuc = malloc(sizeof(InternalUnitCommand));
-				memset(iuc,0,sizeof(InternalUnitCommand));
-				iuc->workingMode = -1;
-			}
-			key = trim_str(key);
-			value = trim_str(value);
-			DBG("key = %s, value %s",key,value);
-			if(IRACC_OP_SUCCESS != _iracc_parse_command_assign_value(iuc,key,value)){
-				errors++;
-			}
-		}
-	}
-
-	if(errors == 0 && iuc){
-		// store the iuc
-		if(iracc.writeCommandCount < (sizeof(iracc.writeCommands) / sizeof(InternalUnitCommand))){
-			//iracc.writeCommands[iracc.writeCommandCount++] = iuc;
-			memcpy(&iracc.writeCommands[iracc.writeCommandCount],iuc,sizeof(InternalUnitCommand));
-			iracc.writeCommandCount++;
-			free(iuc);
-			iuc = NULL;
-			ret = 0;
-		}else{
-			WARN("***WARN - iracc write command buffer full, abort current command");
-			errors++;
-		}
-	}
-	if(errors > 0 && iuc){
-		free(iuc);
-		iuc = NULL;
-	}
-	return ret;
-}
-
-static int _iracc_parse_command_string(char* buf, size_t len){
-	// read line by line
-	char aline[128];
-	int alineLen = 0;
-	bool alineFound = false;
-	int ret = 0;
-	for(int i = 0;i<len;i++){
-		char c = buf[i];
-		if (c == '\r' || c == '\n') {
-			alineFound = true;
-		} else {
-			alineFound = false;
-			aline[alineLen++] = c;
-			if (alineLen == (sizeof(aline) - 1)) {
-				DBG("line read buffer full!");
-				// we're full!
-				alineFound = true;
-			}
-		}
-		if(alineFound){
-			aline[alineLen] = 0;
-			// split the line
-			ret = _iracc_parse_command_split(aline,alineLen);
-			// reset the line length
-			alineLen = 0;
-			alineFound = false;
-		}
-	}
-	if(alineLen > 0){
-		aline[alineLen] = 0;
-		// split the line
-		ret = _iracc_parse_command_split(aline,alineLen);
-	}
-	return ret;
-}
-
 static void _iracc_task_write_iu_commands(){
 	if(iracc.connectedUnitCount == 0 || iracc.state != device_state_ready){
 		// not ready
@@ -556,7 +378,7 @@ static void _iracc_task_write_iu_commands(){
 		if(len == 0) return;
 
 		// parse the received command string "f1=v1,f2=v2" and fill up the iracc.commands
-		if(_iracc_parse_command_string(buf,len) != IRACC_OP_SUCCESS){
+		if(iracc_cmd_parse(buf,len) != IRACC_OP_SUCCESS){
 			INFO("parse write command failed, %.*s",len,buf);
 			return;
 		}
@@ -731,20 +553,26 @@ static void _iracc_update_shared_data(){
 	databus_put_out(buf,len);
 }
 
-#define STATUS_TEMPLATE_STRING "unit=%d, mode=%d, power=%d, wind=%d, i_temp=%.1f, p_temp=%.1f\n"
+#define STATUS_TEMPLATE_STRING "unit=%d, mode=%s, power=%s, wind=%s, i_temp=%.1f, p_temp=%.1f\n"
 static inline int _iracc_print_status(char* buf, size_t bufLen){
 	//FIXME - check the buf len to avoid buffer overflow.
 	int len = 0;
 	for(int i = 0;i<iracc.connectedUnitCount;i++){
 		uint8_t id = iracc.connectedUnitIDs[i];
 		InternalUnitStatus *s = &iracc.connectedUnitStatus[id];
-		len += sprintf((char*)(buf + len),STATUS_TEMPLATE_STRING,s->unitId, s->workingMode, s->powerOn, s->windLevel,s->interiorTemerature,s->presetTemperature);
+		len += sprintf((char*)(buf + len),STATUS_TEMPLATE_STRING,
+				s->unitId,
+				iracc_cmd_get_workmode_value_name(s->workMode),
+				iracc_cmd_get_powermode_value_name(s->powerOn),
+				iracc_cmd_get_windlevel_value_name(s->windLevel),
+				s->interiorTemerature,
+				s->presetTemperature);
 	}
 	return len;
 }
 
 /////////////////////////////////////////////////////////////////////
-#pragma mark - IRACC interface operations
+// IRACC modbus operations
 
 /**
  * Get the gateway status
@@ -909,10 +737,10 @@ static InternalUnitStatus* _handle_internal_unit_status_response(uint8_t unitId,
 	status->unitId = unitId;
 
 	uint8_t i = 0;
-	status->windLevel = (data[i++] >>4 ) & 0x0f; //50 风量hh 风量=0x50&0xf0 10=ll,20=l,30=m,40=h,50=hh.
-	status->powerOn = data[i++] & 1; //00 开关off 开关=0x00&0x01 1=开 0=关
+	status->windLevel = data[i++]; //(data[i++] >>4 ) & 0x0f; //50 风量hh 风量=0x50&0xf0 10=ll,20=l,30=m,40=h,50=hh.
+	status->powerOn = (data[i++] & 1) + 0x60; //00 开关off 开关=0x00&0x01 1=开 0=关, convert to 0x60,0x61
 	status->filterCleanupFlag = data[i++];
-	status->workingMode = (data[i++] & 0x0f);
+	status->workMode = (data[i++] & 0x0f);
 	status->presetTemperature = ((float)(data[i] * 0x100 + data[i+1])) / 10.0f;
 	i+=2;
 
@@ -941,7 +769,7 @@ static InternalUnitStatus* _handle_internal_unit_status_response(uint8_t unitId,
 
 
 /*
- * FIXME  - implement the write routine
+ * write command to iracc gateway
  */
 static int _iracc_write_internal_unit_command(InternalUnitCommand *cmd){
 	if(!cmd)
@@ -969,10 +797,10 @@ static int _iracc_write_internal_unit_command(InternalUnitCommand *cmd){
 		presetValueCount++;
 	}
 
-	if(cmd->workingMode >= 0){
+	if(cmd->workMode >= 0){
 		if(presetValueCount == 0){
 			req->regValue[0] = 0x00;
-			req->regValue[1] = cmd->workingMode; // 00通风|01制热|02制冷|03自动|07除湿|
+			req->regValue[1] = cmd->workMode; // 00通风|01制热|02制冷|03自动|07除湿|
 			req->regValueCount = 2;
 		}else{
 			//regValue[2] = 0x00;

@@ -19,7 +19,7 @@ LD ?= gcc
 #PCH_H = lib.h
 #PCH = lib.h.gch
 
-OBJS = main.o serial_port.o utils.o log.o iracc.o iokit.o crc16.o modbus.o databus.o iracc_ctrl.o iracc_gate.o object.o
+OBJS = main.o serial_port.o utils.o log.o iracc.o iracc_cmd.o iokit.o crc16.o modbus.o databus.o iracc_ctrl.o iracc_gate.o object.o
 OBJS += fifo.o
 
 LIBS =
