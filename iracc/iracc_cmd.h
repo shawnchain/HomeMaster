@@ -57,6 +57,9 @@ typedef enum{
 	powerModeValueUnknow = 0xff,
 }PowerModeValue;
 
+/*
+ * parse batch of commands and store in IRACC internal send queue
+ */
 int iracc_cmd_parse(char* buf, size_t len);
 
 WorkModeValue iracc_cmd_get_workmode_value(char* valueName);

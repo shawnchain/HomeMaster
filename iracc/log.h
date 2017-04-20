@@ -16,9 +16,9 @@
 #define ERROR_LEVEL 0
 
 #ifdef DEBUG
-#define DEFAULT_LOG_LEVEL DEBUG_LEVEL
-#else
 #define DEFAULT_LOG_LEVEL INFO_LEVEL
+#else
+#define DEFAULT_LOG_LEVEL ERROR_LEVEL
 #endif
 
 //////////////////////////////////////////////////////////////////

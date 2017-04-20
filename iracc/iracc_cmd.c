@@ -25,7 +25,7 @@
  *  - temp: float --> 15.00 ~ 35.00
  *  - power: on,off|0,1 --> 61,60
  */
-static inline int _iracc_parse_command_assign_value(InternalUnitCommand *iuc, char* key, char* value){
+static inline int _iracc_cmd_assign_value(InternalUnitCommand *iuc, char* key, char* value){
 	int ret = 0;
 	if(strcmp(key,"unit") == 0){
 		int i = atoi(value);
@@ -73,7 +73,7 @@ static inline int _iracc_parse_command_assign_value(InternalUnitCommand *iuc, ch
 	return ret;
 }
 
-static inline int _iracc_parse_command_split(char* aline, size_t alineLen){
+static inline int _iracc_cmd_parse_aline(char* aline, size_t alineLen){
 	DBG("command: %.*s",alineLen,aline);
 	char *kvpair;
 	char* sep1=",",*sep2="=";
@@ -104,25 +104,20 @@ static inline int _iracc_parse_command_split(char* aline, size_t alineLen){
 			key = trim_str(key);
 			value = trim_str(value);
 			DBG("key = %s, value %s",key,value);
-			if(IRACC_OP_SUCCESS != _iracc_parse_command_assign_value(iuc,key,value)){
+			if(IRACC_OP_SUCCESS != _iracc_cmd_assign_value(iuc,key,value)){
 				errors++;
 			}
 		}
 	}
-
-	if(errors == 0 && iuc){
+	if(iuc && errors == 0){
 		if(iracc_push_command(iuc) == IRACC_OP_SUCCESS){
-			free(iuc);
-			iuc = NULL;
 			ret = 0;
 		}else{
 			WARN("***WARN - iracc push command failed, abort current command");
-			errors++;
 		}
 	}
-	if(errors > 0 && iuc){
+	if(iuc){
 		free(iuc);
-		iuc = NULL;
 	}
 	return ret;
 }
@@ -149,7 +144,7 @@ int iracc_cmd_parse(char* buf, size_t len){
 		if(alineFound){
 			aline[alineLen] = 0;
 			// split the line
-			ret = _iracc_parse_command_split(aline,alineLen);
+			ret = _iracc_cmd_parse_aline(aline,alineLen);
 			// reset the line length
 			alineLen = 0;
 			alineFound = false;
@@ -158,7 +153,7 @@ int iracc_cmd_parse(char* buf, size_t len){
 	if(alineLen > 0){
 		aline[alineLen] = 0;
 		// split the line
-		ret = _iracc_parse_command_split(aline,alineLen);
+		ret = _iracc_cmd_parse_aline(aline,alineLen);
 	}
 	return ret;
 }
