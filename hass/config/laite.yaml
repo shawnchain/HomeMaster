@@ -1,0 +1,76 @@
+ -  platform: laite
+    address: '11 22 33 44'
+    channels:
+      0:
+        name: ch1-01
+      1:
+        name: ch1-02
+      2:
+        name: ch1-03
+      3:
+        name: ch1-04
+      4:
+        name: ch1-05
+      5:
+        name: ch1-06
+      6:
+        name: ch1-07
+      7:
+        name: ch1-08
+      8:
+        name: ch1-09
+      9:
+        name: ch1-10
+      10:
+        name: ch1-11
+      11:
+        name: ch1-12
+      12:
+        name: ch1-13
+      13:
+        name: ch1-14
+      14:
+        name: ch1-15
+      15:
+        name: ch1-16
+      0xff:
+        name: ch1_all
+
+ -  platform: laite
+    address: '55 66 77 88'
+    channels:
+      0:
+        name: ch2-01
+      1:
+        name: ch2-02
+      2:
+        name: ch2-03
+      3:
+        name: ch2-04
+      4:
+        name: ch2-05
+      5:
+        name: ch2-06
+      6:
+        name: ch2-07
+      7:
+        name: ch2-08
+      8:
+        name: ch2-09
+      9:
+        name: ch2-10
+      10:
+        name: ch2-11
+      11:
+        name: ch2-12
+      12:
+        name: ch2-13
+      13:
+        name: ch2-14
+      14:
+        name: ch2-15
+      15:
+        name: ch2-16
+      0xff:
+        name: ch2_all
+

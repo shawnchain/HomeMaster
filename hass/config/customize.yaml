@@ -1,0 +1,8 @@
+switch.keting_zhudeng:
+  friendly_name: '客厅主灯'
+switch.woshi_zhudeng:
+  friendly_name: '卧室主灯'
+switch.ch1_all:
+  friendly_name: '所有灯1'
+switch.ch2_all:
+  friendly_name: '所有灯2'
