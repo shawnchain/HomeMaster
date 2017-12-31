@@ -65,9 +65,10 @@ class LaiteBoard(object):
 
     def __init__(self, port):
         """Initialize the board."""
-        import serial
+        import serial,threading
         self._port = port
         self._board = serial.Serial(port=self._port, baudrate=9600, timeout=3)
+        self.lock = threading.Lock()
 
     def set_mode(self, pin, direction, mode):
         """Set the mode of the board input."""
@@ -116,7 +117,7 @@ class LaiteBoard(object):
             _LOGGER.error("Invalid switch index [%s]", sw_idx)
             return False
 
-    def get_switch_states(self, addr, sw_idx=16):
+    def get_switch_states_unsafe(self, addr, sw_idx=16):
         """ Get the switch status """
         if(sw_idx < 0 or sw_idx > 16):
             _LOGGER.error("Invalid switch index [%s]", sw_idx)
@@ -127,12 +128,18 @@ class LaiteBoard(object):
         self.write_command(cmd)
         # read the response
         data = self._board.read((5 + 16 + 1))
+        _LOGGER.debug("<== read data: %s",data)
         if len(data) != 16:
             _LOGGER.warning("read board status failed, response %d bytes", len(data))
             return None
         status = data[5:16]
         _LOGGER.debug("switch status: %s", status)
         return status
+
+    def get_switch_states(self, addr, sw_idx=16):
+        """ Get the switch status, synchronized """
+        with self.lock:
+            return self.get_switch_states_unsafe(addr, sw_idx)
 
     # def get_analog_inputs(self):
     #     """Get the values from the pins."""

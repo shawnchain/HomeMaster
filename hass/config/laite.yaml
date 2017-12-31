@@ -1,5 +1,13 @@
  -  platform: laite
-    address: '11 22 33 44'
+    address: '17 03 17 07'
+    channels:
+      0:
+        name: chx-01
+      0xff:
+        name: chx-all
+
+ -  platform: laite
+    address: '16 12 20 0A'
     channels:
       0:
         name: ch1-01
@@ -37,7 +45,7 @@
         name: ch1_all
 
  -  platform: laite
-    address: '55 66 77 88'
+    address: '16 11 07 04'
     channels:
       0:
         name: ch2-01
