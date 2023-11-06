@@ -81,6 +81,9 @@ static inline int _iracc_cmd_parse_aline(char* aline, size_t alineLen){
 	int count = 0;
 	int errors = 0;
 	int ret = -1;
+
+	(void)count;
+
 	// split the line by ','
 	InternalUnitCommand *iuc = NULL;
 	for(kvpair = strtok_r(aline,sep1,&brk1);kvpair;kvpair=strtok_r(NULL,sep1,&brk1)){

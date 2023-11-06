@@ -22,15 +22,19 @@
 // Simple poll wrapper
 
 #define io_fds_len 8 // FIXED IO FDs
-static int io_fds[io_fds_len];
-static io_callback io_cbs[io_fds_len];
+typedef struct io_fd_t {
+	int fd;
+	io_callback cb;
+} io_fd;
+
+static io_fd io_fds[io_fds_len];
 static int maxfd = -1;
 
 int io_init() {
 	int i = 0;
 	for (i = 0; i < io_fds_len; i++) {
-		io_fds[i] = -1;
-		io_cbs[i] = 0;
+		io_fds[i].fd = -1;
+		io_fds[i].cb = 0;
 	}
 	return 0;
 }
@@ -40,12 +44,12 @@ int io_shutdown(){
 	//just remove all fds from reactor
 	int i = 0;
 	for (i = 0; i < io_fds_len; i++) {
-		int fd = io_fds[i];
+		int fd = io_fds[i].fd;
 		if(fd >0){
 			DBG("clean leaked fd %d",fd);
 			close(fd);
-			io_fds[i] = -1;
-			io_cbs[i] = 0;
+			io_fds[i].fd = -1;
+			io_fds[i].cb = 0;
 		}
 	}
 	maxfd = -1;
@@ -57,12 +61,12 @@ int io_shutdown(){
 int io_add(int fd, io_callback callback) {
 	int i = 0;
 	for (i = 0; i < io_fds_len; i++) {
-		if (io_fds[i] == fd) {
+		if (io_fds[i].fd == fd) {
 			// all ready there,
 			return i;
-		} else if (io_fds[i] < 0) {
-			io_fds[i] = fd;
-			io_cbs[i] = callback;
+		} else if (io_fds[i].fd < 0) {
+			io_fds[i].fd = fd;
+			io_fds[i].cb = callback;
 			if (fd > maxfd) {
 				maxfd = fd;
 			}
@@ -76,15 +80,15 @@ int io_add(int fd, io_callback callback) {
 int io_remove(int fd) {
 	int i = 0, j = 0;
 	for (i = 0; i < io_fds_len; i++) {
-		if (io_fds[i] == fd) {
-			io_fds[i] = -1;
-			io_cbs[i] = 0;
+		if (io_fds[i].fd == fd) {
+			io_fds[i].fd = -1;
+			io_fds[i].cb = 0;
 			if (maxfd == fd) {
 				maxfd = 0;
 				// get the maxfd
 				for (j = 0; j < io_fds_len; j++) {
-					if (io_fds[j] > maxfd) {
-						maxfd = io_fds[j];
+					if (io_fds[j].fd > maxfd) {
+						maxfd = io_fds[j].fd;
 					}
 				}
 			}
@@ -101,16 +105,18 @@ int io_run() {
 	struct timeval timeo;
 	int rc;
 	int i;
+	int fd;
 
 	FD_ZERO(&rset);
 	FD_ZERO(&wset);
 	FD_ZERO(&eset);
 
 	for (i = 0; i < io_fds_len; i++) {
-		if (io_fds[i] >= 0) {
-			FD_SET(io_fds[i], &rset);
-			FD_SET(io_fds[i], &wset);
-			FD_SET(io_fds[i], &eset);
+		fd = io_fds[i].fd;
+		if (fd >= 0) {
+			FD_SET(fd, &rset);
+			FD_SET(fd, &wset);
+			FD_SET(fd, &eset);
 		}
 	}
 
@@ -124,24 +130,25 @@ int io_run() {
 	} else if (rc > 0) {
 		// got ready
 		for (i = 0; i < io_fds_len; i++) {
-			if (io_fds[i] >= 0 && FD_ISSET(io_fds[i], &rset)
-					&& io_cbs[i] > 0) {
-				io_cbs[i](io_fds[i], io_state_read);
+			fd = io_fds[i].fd;
+			if (fd >= 0 && FD_ISSET(fd, &rset)
+					&& io_fds[i].cb > 0) {
+				io_fds[i].cb(fd, io_state_read);
 			}
-			if (io_fds[i] >= 0 && FD_ISSET(io_fds[i], &wset)
-					&& io_cbs[i] > 0) {
-				io_cbs[i](io_fds[i], io_state_write);
+			if (fd >= 0 && FD_ISSET(fd, &wset)
+					&& io_fds[i].cb > 0) {
+				io_fds[i].cb(fd, io_state_write);
 			}
-			if (io_fds[i] >= 0 && FD_ISSET(io_fds[i], &eset)
-					&& io_cbs[i] > 0) {
-				io_cbs[i](io_fds[i], io_state_error);
+			if (fd >= 0 && FD_ISSET(fd, &eset)
+					&& io_fds[i].cb > 0) {
+				io_fds[i].cb(fd, io_state_error);
 			}
 		}
 	} else {
 		// idle
 		for (i = 0; i < io_fds_len; i++) {
-			if (io_fds[i] >= 0 && io_cbs[i] > 0) {
-				io_cbs[i](io_fds[i], io_state_idle);
+			if (io_fds[i].fd >= 0 && io_fds[i].cb > 0) {
+				io_fds[i].cb(io_fds[i].fd, io_state_idle);
 			}
 		}
 	}

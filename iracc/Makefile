@@ -10,7 +10,15 @@ endif
 GIT_VERSION := $(shell git describe --abbrev=6 --always --tags)
 
 CC ?= gcc
-CFLAGS += -Wall -ggdb -DDEBUG -DVERSION=\"$(GIT_VERSION)\"
+CFLAGS_REL := -Wall -DNDEBUG -Os
+CFLAGS_DBG := -Wall -ggdb -DDEBUG -O0
+
+ifeq ($(RELEASE),1)
+CFLAGS += $(CFLAGS_REL) -DVERSION=\"$(GIT_VERSION)\"
+else
+CFLAGS += $(CFLAGS_DBG) -DVERSION=\"$(GIT_VERSION)\"
+endif
+
 HEADERS = lib.h defs.h object.h utils.h serial_port.h log.h iokit.h 
 
 LD ?= gcc

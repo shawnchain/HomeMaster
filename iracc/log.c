@@ -116,6 +116,7 @@ void log_log(const char* tag, int level, const char* module, const char* msg, ..
 	va_start(args,msg);
 
 	size_t bytesPrinted = 0;
+	(void)bytesPrinted;
 
 	char stime[32];
 	time_t current_time;
@@ -159,6 +160,7 @@ void log_log(const char* tag, int level, const char* module, const char* msg, ..
 void log_hexdump(void *d, size_t len) {
 	unsigned char *s;
 	size_t bytesPrinted = 0;
+	(void)bytesPrinted;
 	if(log.logfile){
 		for (s = d; len; len--, s++){
 			bytesPrinted += fprintf(log.logfile,"%02x ", (unsigned int) *s);
